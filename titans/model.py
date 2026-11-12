@@ -7,11 +7,13 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 from safetensors.torch import load_file, save_file
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoTokenizer, LlamaForCausalLM, PreTrainedTokenizerBase
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
 
@@ -27,6 +29,9 @@ from .types import (
     TrainingEpisode,
     TrainingResult,
 )
+
+if TYPE_CHECKING:
+    from .sglang_backend import SGLangBackend
 
 
 class TitansModel(nn.Module):
@@ -83,7 +88,46 @@ class TitansModel(nn.Module):
         self.backbone.requires_grad_(False)
         self._owner = uuid.uuid4().hex
         self._revision = 0
+        self._checkpoint_backbone = False
+        self._sglang_backend: SGLangBackend | None = None
         self.eval()
+
+    def _uses_sglang(self) -> bool:
+        """Select SGLang for CUDA inference by default, retaining the CPU reference path.
+
+        Returns:
+            Whether public inference operations must run through SGLang.
+
+        Raises:
+            RuntimeError: SGLang was explicitly requested for a CPU model.
+        """
+        device = self.backbone.model.embed_tokens.weight.device
+        if self.config.inference_backend == "sglang" and device.type != "cuda":
+            raise RuntimeError("SGLang inference requires a CUDA model")
+        return self.config.inference_backend == "sglang" or (
+            self.config.inference_backend == "auto" and device.type == "cuda"
+        )
+
+    def _serving_backend(self) -> "SGLangBackend":
+        """Start the SGLang worker lazily for the current trained-model revision.
+
+        Returns:
+            The owned local inference engine.
+        """
+        if self._sglang_backend is None:
+            from .sglang_backend import SGLangBackend
+
+            self._sglang_backend = SGLangBackend(self)
+        return self._sglang_backend
+
+    def close(self) -> None:
+        """Release a running SGLang engine and invalidate its live state handles."""
+        if self._sglang_backend is not None:
+            try:
+                self._sglang_backend.close()
+            finally:
+                self._sglang_backend = None
+                self._revision += 1
 
     @classmethod
     def from_pretrained(
@@ -144,7 +188,7 @@ class TitansModel(nn.Module):
         for key, memory in self.memories.items():
             state._memory[int(key)] = memory.initial_state()
         if self.config.persistent_tokens:
-            self._forward_embeddings(self.persistent, state, write=False)
+            self._forward_embeddings(self.persistent, state, write=False, last_only=True)
         return state
 
     def _local_attention(
@@ -154,6 +198,7 @@ class TitansModel(nn.Module):
         positions: Tensor,
         rotary: tuple[Tensor, Tensor],
         cache: AttentionState | None,
+        next_position: int,
     ) -> tuple[Tensor, AttentionState]:
         """Run causal SDPA while retaining only persistent and recent grouped KV.
 
@@ -163,39 +208,81 @@ class TitansModel(nn.Module):
             positions: Absolute positions for this chunk, shaped [tokens].
             rotary: Cosine and sine tensors from the host's RoPE implementation.
             cache: Bounded cache from the preceding call, or None.
+            next_position: Python integer position following this block; avoids
+                device synchronization when selecting the retained cache.
 
         Returns:
             Attention output and a bounded cache for the next chunk.
         """
         attention = layer.self_attn
-        shape = (*hidden.shape[:-1], -1, attention.head_dim)
-        query = attention.q_proj(hidden).view(shape).transpose(1, 2)
-        key = attention.k_proj(hidden).view(shape).transpose(1, 2)
-        value = attention.v_proj(hidden).view(shape).transpose(1, 2)
-        query, key = apply_rotary_pos_emb(query, key, *rotary)
         key_positions = positions
         if cache is not None:
-            key = torch.cat((cache.keys, key), -2)
-            value = torch.cat((cache.values, value), -2)
             key_positions = torch.cat((cache.positions, positions))
-        allowed = (key_positions[None, :] <= positions[:, None]) & (
-            (key_positions[None, :] < self.config.persistent_tokens)
-            | (key_positions[None, :] > positions[:, None] - self.config.attention_window)
-        )
-        groups = query.shape[1] // key.shape[1]
-        # Keep cached KV grouped; expand only the bounded active attention block.
-        output = F.scaled_dot_product_attention(
-            query, key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1),
-            attn_mask=allowed[None, None], dropout_p=0.0, scale=attention.scaling,
-        )
-        output = attention.o_proj(output.transpose(1, 2).reshape(*hidden.shape[:-1], -1))
-        keep = (key_positions < self.config.persistent_tokens) | (
-            key_positions > positions[-1] - self.config.attention_window + 1
-        )
-        return output, AttentionState(key[..., keep, :], value[..., keep, :], key_positions[keep])
+        use_fa3 = (not torch.is_grad_enabled() and hidden.device.type == "cuda"
+                   and self.config.attention_backend in ("auto", "fa3"))
+        allowed = None
+        if not use_fa3:
+            allowed = (key_positions[None, :] <= positions[:, None]) & (
+                (key_positions[None, :] < self.config.persistent_tokens)
+                | (key_positions[None, :] > positions[:, None] - self.config.attention_window)
+            )
+        if self.config.compile_kernels and not use_fa3:
+            from .kernels import compiled_attention
+
+            assert allowed is not None
+            empty_shape = (hidden.shape[0], attention.k_proj.out_features // attention.head_dim,
+                           0, attention.head_dim)
+            old_keys = cache.keys if cache is not None else hidden.new_empty(empty_shape)
+            old_values = cache.values if cache is not None else hidden.new_empty(empty_shape)
+            output, key, value = compiled_attention(
+                hidden, attention.q_proj.weight, attention.k_proj.weight,
+                attention.v_proj.weight, attention.o_proj.weight,
+                attention.q_proj.bias, attention.k_proj.bias,
+                attention.v_proj.bias, attention.o_proj.bias,
+                *rotary, old_keys, old_values, allowed, attention.head_dim, attention.scaling,
+            )
+        else:
+            shape = (*hidden.shape[:-1], -1, attention.head_dim)
+            query = attention.q_proj(hidden).view(shape).transpose(1, 2)
+            key = attention.k_proj(hidden).view(shape).transpose(1, 2)
+            value = attention.v_proj(hidden).view(shape).transpose(1, 2)
+            if hidden.device.type == "cuda" and self.config.use_liger:
+                from .gpu_ops import liger_rotary
+
+                query, key = liger_rotary(query, key, *rotary)
+            else:
+                query, key = apply_rotary_pos_emb(query, key, *rotary)
+            if cache is not None:
+                key = torch.cat((cache.keys, key), -2)
+                value = torch.cat((cache.values, value), -2)
+            groups = query.shape[1] // key.shape[1]
+            if use_fa3:
+                from .gpu_ops import flash_attention3
+
+                output = flash_attention3(
+                    query, key, value, prefix_count=min(self.config.persistent_tokens, next_position),
+                    window=self.config.attention_window, scale=attention.scaling,
+                    prefix_only=next_position <= self.config.persistent_tokens,
+                )
+            else:
+                output = F.scaled_dot_product_attention(
+                    query, key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1),
+                    attn_mask=allowed[None, None], dropout_p=0.0, scale=attention.scaling,
+                )
+            output = attention.o_proj(output.transpose(1, 2).reshape(*hidden.shape[:-1], -1))
+        prefix_count = min(self.config.persistent_tokens, next_position)
+        tail_count = min(self.config.attention_window - 1, key.shape[-2] - prefix_count)
+        tail_start = key.shape[-2] - tail_count
+        # Slices have known lengths on the host; boolean indexing here would
+        # force a CUDA synchronization at every layer to discover output sizes.
+        kept_keys = torch.cat((key[..., :prefix_count, :], key[..., tail_start:, :]), -2)
+        kept_values = torch.cat((value[..., :prefix_count, :], value[..., tail_start:, :]), -2)
+        kept_positions = torch.cat((key_positions[:prefix_count], key_positions[tail_start:]))
+        return output, AttentionState(kept_keys, kept_values, kept_positions)
 
     def _forward_embeddings(
         self, embeddings: Tensor, state: StreamState, *, write: bool = True,
+        last_only: bool = False, return_hidden: bool = False, positions: Tensor | None = None,
     ) -> Tensor:
         """Forward one bounded block, mutating its owned stream state.
 
@@ -203,19 +290,36 @@ class TitansModel(nn.Module):
             embeddings: Embedded tokens [1, tokens, hidden].
             state: Mutable stream; callers enforce ownership before entry.
             write: Whether this block may update long-term memory.
+            last_only: Whether to project only the final token to vocabulary logits.
+            return_hidden: Whether to return normalized activations for fused Liger loss.
+            positions: Optional GPU position buffer for the private CUDA graph runner.
 
         Returns:
             Logits [1, tokens, vocabulary] for next-token prediction.
         """
-        positions = torch.arange(
-            state._position, state._position + embeddings.shape[1], device=embeddings.device,
-        )
+        if positions is None:
+            positions = torch.arange(
+                state._position, state._position + embeddings.shape[1], device=embeddings.device,
+            )
         rotary = self.backbone.model.rotary_emb(embeddings, positions[None, :])
         hidden = embeddings
+        use_liger = self.config.use_liger and hidden.device.type == "cuda"
         for index, layer in enumerate(self.backbone.model.layers):
-            normalized = layer.input_layernorm(hidden)
+            if use_liger:
+                from .gpu_ops import liger_norm
+
+                normalized = liger_norm(hidden, layer.input_layernorm.weight,
+                                        layer.input_layernorm.variance_epsilon)
+            elif self.config.compile_kernels:
+                from .kernels import compiled_rms_norm
+
+                normalized = compiled_rms_norm(hidden, layer.input_layernorm.weight,
+                                               layer.input_layernorm.variance_epsilon)
+            else:
+                normalized = layer.input_layernorm(hidden)
             attended, cache = self._local_attention(
                 layer, normalized, positions, rotary, state._attention.get(index),
+                state._position + embeddings.shape[1],
             )
             state._attention[index] = cache
             if str(index) in self.memories:
@@ -223,19 +327,65 @@ class TitansModel(nn.Module):
                     normalized, state._memory[index], write=write,
                 )
             hidden = hidden + attended
-            hidden = hidden + layer.mlp(layer.post_attention_layernorm(hidden))
-        logits = self.backbone.lm_head(self.backbone.model.norm(hidden))
+            if use_liger:
+                normalized = liger_norm(hidden, layer.post_attention_layernorm.weight,
+                                        layer.post_attention_layernorm.variance_epsilon)
+            elif self.config.compile_kernels:
+                normalized = compiled_rms_norm(hidden, layer.post_attention_layernorm.weight,
+                                               layer.post_attention_layernorm.variance_epsilon)
+            else:
+                normalized = layer.post_attention_layernorm(hidden)
+            if (use_liger or self.config.compile_kernels) and self.backbone.config.hidden_act == "silu":
+                if use_liger:
+                    from .gpu_ops import liger_mlp
+
+                    mlp_forward = liger_mlp
+                else:
+                    from .kernels import compiled_llama_mlp
+
+                    mlp_forward = compiled_llama_mlp
+
+                mlp = layer.mlp
+                arguments = (normalized, mlp.gate_proj.weight, mlp.up_proj.weight,
+                             mlp.down_proj.weight, mlp.gate_proj.bias, mlp.up_proj.bias,
+                             mlp.down_proj.bias)
+                if self._checkpoint_backbone and torch.is_grad_enabled():
+                    feedforward = checkpoint(mlp_forward, *arguments, use_reentrant=False)
+                else:
+                    feedforward = mlp_forward(*arguments)
+            elif self._checkpoint_backbone and torch.is_grad_enabled():
+                feedforward = checkpoint(layer.mlp, normalized, use_reentrant=False)
+            else:
+                feedforward = layer.mlp(normalized)
+            hidden = hidden + feedforward
+        if last_only:
+            hidden = hidden[:, -1:]
+        if use_liger:
+            normalized = liger_norm(hidden, self.backbone.model.norm.weight,
+                                    self.backbone.model.norm.variance_epsilon)
+        elif self.config.compile_kernels:
+            normalized = compiled_rms_norm(hidden, self.backbone.model.norm.weight,
+                                           self.backbone.model.norm.variance_epsilon)
+        else:
+            normalized = self.backbone.model.norm(hidden)
+        state._next_hidden = normalized[:, -1:].contiguous()
+        logits = normalized if return_hidden else self.backbone.lm_head(normalized)
         state._position += embeddings.shape[1]
-        state._next_logits = logits[:, -1:].contiguous()
+        state._next_logits = None if return_hidden else logits[:, -1:].contiguous()
         return logits
 
-    def _forward_tokens(self, tokens: list[int], state: StreamState, *, write: bool = True) -> Tensor:
+    def _forward_tokens(
+        self, tokens: list[int], state: StreamState, *, write: bool = True, last_only: bool = False,
+        return_hidden: bool = False,
+    ) -> Tensor:
         """Forward a nonempty token block, splitting work into bounded chunks.
 
         Args:
             tokens: IDs in the backbone vocabulary.
             state: Owned state updated by the call.
             write: Whether long-term memory writes are enabled.
+            last_only: Whether to return only the final token's logits.
+            return_hidden: Whether to return normalized hidden states for fused training loss.
 
         Returns:
             Concatenated logits; public ingestion discards each chunk promptly.
@@ -244,12 +394,13 @@ class TitansModel(nn.Module):
             raise ValueError("A forward block must contain at least one token")
         device = self.backbone.model.embed_tokens.weight.device
         outputs: list[Tensor] = []
-        for start in range(0, len(tokens), self.config.chunk_size):
-            ids = torch.tensor([tokens[start:start + self.config.chunk_size]], device=device)
+        for start in range(0, len(tokens), self.config.prefill_chunk_size):
+            ids = torch.tensor([tokens[start:start + self.config.prefill_chunk_size]], device=device)
             outputs.append(self._forward_embeddings(self.backbone.model.embed_tokens(ids), state,
-                                                    write=write))
+                                                    write=write, last_only=last_only,
+                                                    return_hidden=return_hidden))
         state._tokens += len(tokens)
-        return torch.cat(outputs, 1)
+        return outputs[-1] if last_only else torch.cat(outputs, 1)
 
     def _document_tokens(self, document: Document) -> list[int]:
         """Encode a document with explicit boundaries, without truncation.
@@ -290,14 +441,17 @@ class TitansModel(nn.Module):
             ValueError: State is stale, foreign or invalid. Any failure after
                 processing starts invalidates that state; it must be discarded.
         """
+        if self._uses_sglang():
+            return self._serving_backend().ingest(document, state)
         if state is not None:
             self._validate_state(state)
         tokens = self._document_tokens(document)
         if state is None:
             state = self._new_state()
         try:
-            for start in range(0, len(tokens), self.config.chunk_size):
-                self._forward_tokens(tokens[start:start + self.config.chunk_size], state)
+            for start in range(0, len(tokens), self.config.prefill_chunk_size):
+                self._forward_tokens(tokens[start:start + self.config.prefill_chunk_size], state,
+                                     last_only=True)
             state._documents += 1
         except Exception:
             state._valid = False
@@ -317,6 +471,8 @@ class TitansModel(nn.Module):
             ValueError: The source state is stale, foreign or invalid.
         """
         self._validate_state(state)
+        if state._remote_id is not None:
+            return self._serving_backend().clone_state(state)
         return state._copy(detach=True)
 
     @torch.no_grad()
@@ -337,11 +493,14 @@ class TitansModel(nn.Module):
         Raises:
             ValueError: The source stream is stale, foreign or invalid.
         """
+        if self._uses_sglang():
+            return self._serving_backend().answer(question, state, config)
         branch = self.clone_state(state)
         write = config.memory_policy == "temporary"
         prompt = self._question_tokens(question)
-        for start in range(0, len(prompt), self.config.chunk_size):
-            self._forward_tokens(prompt[start:start + self.config.chunk_size], branch, write=write)
+        for start in range(0, len(prompt), self.config.prefill_chunk_size):
+            self._forward_tokens(prompt[start:start + self.config.prefill_chunk_size], branch, write=write,
+                                 last_only=True)
         generator = torch.Generator(device="cpu").manual_seed(config.seed)
         generated: list[int] = []
         eos = self.backbone.generation_config.eos_token_id

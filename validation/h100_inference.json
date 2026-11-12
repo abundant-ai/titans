@@ -1,0 +1,71 @@
+{
+  "base_model": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+  "backbone_parameters": 1711376384,
+  "package_source_sha256": "aff5cabb059b87e89577da6034767b1ce86333d101dcd08bb8402e0a560319b0",
+  "total_parameters": 1730360844,
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "torch": "2.9.1+cu129",
+  "sglang": "0.5.7",
+  "liger_kernel": "0.6.4",
+  "config": {
+    "memory_dim": 64,
+    "memory_hidden_dim": 128,
+    "memory_depth": 2,
+    "memory_layers": [
+      0,
+      6,
+      12,
+      18
+    ],
+    "chunk_size": 32,
+    "attention_window": 512,
+    "persistent_tokens": 4,
+    "conv_kernel": 3,
+    "max_inner_learning_rate": 0.01,
+    "gate_bias": -4.0,
+    "compile_kernels": true,
+    "prefill_chunk_size": 256,
+    "inference_backend": "sglang",
+    "attention_backend": "fa3",
+    "use_liger": true,
+    "cuda_graphs": true
+  },
+  "repeats": 5,
+  "scope": "single active stream; untrained memory adapters; throughput, not QA accuracy",
+  "profile": {
+    "direct_decode_tokens_per_second": 236.97100199549044,
+    "captured_cuda_graphs": 32,
+    "cuda_graph_replays": 136,
+    "cpu_operator_profile": "-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                                  cudaDeviceSynchronize        36.41%      51.452ms        36.41%      51.452ms      25.726ms       0.000us         0.00%       0.000us       0.000us             2  \n                                        cudaGraphLaunch        32.60%      46.066ms        58.45%      82.597ms       2.581ms       0.000us         0.00%       0.000us       0.000us            32  \n                                    Command Buffer Full        24.74%      34.960ms        24.74%      34.960ms       2.497ms       0.000us         0.00%       0.000us       0.000us            14  \n                                           Buffer Flush         2.45%       3.463ms         2.49%       3.515ms       1.757ms       0.000us         0.00%       0.000us       0.000us             2  \n                                Activity Buffer Request         2.27%       3.213ms         2.27%       3.213ms       1.606ms       1.152us         0.00%       1.152us       0.576us             2  \n                                        cudaMemcpyAsync         0.62%     872.402us         0.62%     872.402us      27.263us       0.000us         0.00%       0.000us       0.000us            32  \n                                            aten::slice         0.41%     584.688us         0.55%     778.665us       6.083us       0.000us         0.00%       0.000us       0.000us           128  \n                                            aten::copy_         0.33%     464.341us         2.11%       2.978ms      93.075us      37.054us         0.03%      38.206us       1.194us            32  \n                                       aten::as_strided         0.14%     193.977us         0.14%     193.977us       1.515us       0.000us         0.00%       0.000us       0.000us           128  \n                                  cudaStreamIsCapturing         0.02%      32.229us         0.02%      32.229us       1.007us       3.680us         0.00%       3.680us       0.115us            32  \n                                   cudaDriverGetVersion         0.00%       6.948us         0.00%       6.948us       0.217us       3.424us         0.00%       3.424us       0.107us            32  \n                         Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us      37.054us         0.03%      37.054us       1.158us            32  \nvoid at::native::(anonymous namespace)::indexSelectS...         0.00%       0.000us         0.00%       0.000us       0.000us      81.951us         0.07%      81.951us       2.561us            32  \nvoid at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us      40.416us         0.03%      40.416us       1.263us            32  \nvoid cutlass::Kernel2<cutlass_80_simt_sgemm_128x32_8...         0.00%       0.000us         0.00%       0.000us       0.000us     101.250us         0.08%     101.250us       3.164us            32  \nvoid at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us     511.996us         0.42%     511.996us       1.778us           288  \nvoid at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      51.585us         0.04%      51.585us       1.612us            32  \nvoid at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      70.399us         0.06%      70.399us       1.100us            64  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \nSelf CPU time total: 141.308ms\nSelf CUDA time total: 120.756ms\n",
+    "cuda_operator_profile": "-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                      nvjet_tst_64x8_64x16_2x1_v_bz_TNT         0.00%       0.000us         0.00%       0.000us       0.000us      23.057ms        19.09%      23.057ms      15.011us          1536  \n                      nvjet_tst_64x8_64x16_4x1_v_bz_TNT         0.00%       0.000us         0.00%       0.000us       0.000us      19.896ms        16.48%      19.896ms       5.979us          3328  \nvoid at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us      11.653ms         9.65%      11.653ms       7.587us          1536  \n               nvjet_tst_64x8_64x16_2x1_v_bz_splitK_TNT         0.00%       0.000us         0.00%       0.000us       0.000us      10.776ms         8.92%      10.776ms      14.031us           768  \nvoid cutlass::device_kernel<flash::enable_sm90_or_la...         0.00%       0.000us         0.00%       0.000us       0.000us       9.623ms         7.97%       9.623ms      12.530us           768  \nvoid at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us       7.148ms         5.92%       7.148ms       4.654us          1536  \nvoid at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       5.719ms         4.74%       5.719ms       3.723us          1536  \n                                              memcpy128         0.00%       0.000us         0.00%       0.000us       0.000us       4.168ms         3.45%       4.168ms       2.714us          1536  \n                                          memcpy32_post         0.00%       0.000us         0.00%       0.000us       0.000us       3.079ms         2.55%       3.079ms       1.065us          2892  \n                               _rms_norm_forward_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       2.444ms         2.02%       2.444ms       1.559us          1568  \n                      nvjet_tst_384x8_64x4_2x1_v_bz_TNT         0.00%       0.000us         0.00%       0.000us       0.000us       2.306ms         1.91%       2.306ms      72.078us            32  \nvoid at::native::vectorized_elementwise_kernel<8, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.114ms         1.75%       2.114ms       1.271us          1664  \n       triton_poi_fused__to_copy_clone_unsqueeze_view_1         0.00%       0.000us         0.00%       0.000us       0.000us       1.937ms         1.60%       1.937ms       1.261us          1536  \n                                 _swiglu_forward_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       1.551ms         1.28%       1.551ms       2.020us           768  \nvoid gemvNSP_kernel<float, float, float, float, 1, 3...         0.00%       0.000us         0.00%       0.000us       0.000us       1.469ms         1.22%       1.469ms       1.912us           768  \nstd::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       1.458ms         1.21%       1.458ms       1.899us           768  \nvoid at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us       1.326ms         1.10%       1.326ms       1.727us           768  \ntriton_red_fused__softmax_amax_ge_logsumexp_mul_neg_...         0.00%       0.000us         0.00%       0.000us       0.000us       1.268ms         1.05%       1.268ms       1.651us           768  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \nSelf CPU time total: 141.308ms\nSelf CUDA time total: 120.756ms\n"
+  },
+  "load_startup_and_warmup_seconds": 76.691359181,
+  "document_tokens": 1006,
+  "ingest_seconds_samples": [
+    0.25716597399997454,
+    0.22329054799996584,
+    0.23564672800000608,
+    0.22893943000002537,
+    0.2587929179999833
+  ],
+  "ingest_tokens_per_second": 4269.10234883454,
+  "generation_128_tokens_seconds_samples": [
+    0.7075192949999973,
+    0.6906369779999864,
+    0.6985083879999934,
+    0.7005153520000249,
+    0.7053994309999894
+  ],
+  "time_to_first_token_seconds_samples": [
+    0.03679214900000716,
+    0.036331071999995856,
+    0.03702858799999831,
+    0.03983220300000312,
+    0.04283285399998249
+  ],
+  "generation_including_prefill_tokens_per_second": 182.72261933239608,
+  "estimated_decode_tokens_per_second": 191.4130121215122,
+  "median_time_to_first_token_seconds": 0.03702858799999831,
+  "source_preservation_and_clone_check": "passed",
+  "seeded_sampling_check": "passed"
+}

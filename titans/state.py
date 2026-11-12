@@ -48,6 +48,8 @@ class StreamState:
     _documents: int = 0
     _next_logits: Tensor | None = None
     _valid: bool = True
+    _next_hidden: Tensor | None = None
+    _remote_id: str | None = None
 
     @property
     def tokens_processed(self) -> int:
@@ -68,14 +70,19 @@ class StreamState:
         Returns:
             An independent state, including pending writes and cached logits.
         """
+        if self._remote_id is not None:
+            raise ValueError("Remote streams must be cloned through TitansModel.clone_state")
         logits = self._next_logits
         if logits is not None:
             logits = logits.detach().clone() if detach else logits.clone()
+        hidden = self._next_hidden
+        if hidden is not None:
+            hidden = hidden.detach().clone() if detach else hidden.clone()
         return StreamState(
             self._owner, self._revision,
             {index: memory.copy(detach=detach) for index, memory in self._memory.items()},
             {index: cache.copy(detach=detach) for index, cache in self._attention.items()},
-            self._position, self._tokens, self._documents, logits, self._valid,
+            self._position, self._tokens, self._documents, logits, self._valid, hidden,
         )
 
     def _detach(self) -> None:
@@ -87,3 +94,5 @@ class StreamState:
             cache.values = cache.values.detach()
         if self._next_logits is not None:
             self._next_logits = self._next_logits.detach()
+        if self._next_hidden is not None:
+            self._next_hidden = self._next_hidden.detach()

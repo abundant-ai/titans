@@ -1,0 +1,28 @@
+{
+  "backbone_snapshot": "/private/tmp/titans-hf-cache/hub/models--HuggingFaceTB--SmolLM2-135M-Instruct/snapshots/12fd25f77366fa6b3b4b768ec3050bf629380bac",
+  "device": "cpu",
+  "threads": 4,
+  "backbone_parameters": 134515008,
+  "adapter_parameters": 745542,
+  "stock_llama_max_logit_error_with_memory_disabled": 0.0,
+  "training": {
+    "checkpoint_path": "/private/tmp/titans-pretrained-smoke-checkpoint",
+    "tokens_processed": 55,
+    "optimizer_steps": 1,
+    "mean_loss": 3.4161003311164677,
+    "elapsed_seconds": 0.5378614999935962,
+    "stop_reason": "data_exhausted"
+  },
+  "memory_write_gates_updated": true,
+  "backbone_sample_unchanged": true,
+  "checkpoint_roundtrip_answer_identical": true,
+  "example_answer": {
+    "question_id": "check",
+    "text": "Rome.",
+    "abstained": false,
+    "generated_tokens": 3,
+    "stopped_by_limit": false
+  },
+  "elapsed_seconds": 2.8017127090133727,
+  "scope": "execution and gradient smoke check; one optimizer step is not a QA evaluation"
+}

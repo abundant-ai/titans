@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-12",
+  "modal_app": "https://modal.com/apps/abundant-ai/testing/ap-dDu0Z8bZAdsur5n2cXtIIY",
+  "package_source_sha256": "aff5cabb059b87e89577da6034767b1ce86333d101dcd08bb8402e0a560319b0",
+  "gpu_test_command": "python -m pytest /workspace/tests/test_gpu.py -q --tb=short --show-capture=no",
+  "gpu_test_exit_code": 0,
+  "gpu_test_summary": "10 passed, 1 warning in 187.48s",
+  "warning": "TF32 tensor cores were available but disabled; FP32 memory math was retained.",
+  "cpu_test_summary": "55 passed, 10 skipped in 9.36s",
+  "source_preservation_and_clone_check": "passed",
+  "seeded_sampling_check": "passed"
+}

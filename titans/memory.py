@@ -224,34 +224,43 @@ class NeuralMemory(nn.Module):
             within an unfinished chunk all use its initial weights; no current
             or future token's write is visible until the next chunk.
         """
-        projected = self.qkv(hidden)
-        conv_input = torch.cat((state.conv_tail, projected.transpose(1, 2)), -1)
-        mixed = F.silu(self.conv(conv_input).transpose(1, 2))
-        tail_size = self.config.conv_kernel - 1
-        state.conv_tail = conv_input[..., -tail_size:] if tail_size else conv_input[..., :0]
-        query, key, value = mixed.chunk(3, -1)
-        dtype = state.weights[0].dtype
-        query = F.normalize(query.to(dtype), dim=-1, eps=1e-6)
-        key = F.normalize(key.to(dtype), dim=-1, eps=1e-6)
-        value = value.to(dtype)
-        gates = self.gates(hidden).to(dtype).sigmoid()
-        gates = gates * gates.new_tensor([1.0, 1.0, self.config.max_inner_learning_rate])
+        from .kernels import (
+            combine_read,
+            compiled_chunk_update,
+            compiled_combine_read,
+            compiled_project_tokens,
+            compiled_read,
+            project_tokens,
+        )
+
+        project = compiled_project_tokens if self.config.compile_kernels else project_tokens
+        retrieve = compiled_read if self.config.compile_kernels else mlp
+        update = compiled_chunk_update if self.config.compile_kernels else chunk_update
+        combine = compiled_combine_read if self.config.compile_kernels else combine_read
+        query, key, value, gates, state.conv_tail = project(
+            hidden, state.conv_tail, self.qkv.weight, self.conv.weight, self.conv.bias,
+            self.gates.weight, self.gates.bias, self.config.max_inner_learning_rate,
+        )
         outputs: list[Tensor] = []
         start = 0
         while start < hidden.shape[1]:
             count = min(self.config.chunk_size - state.pending.shape[1], hidden.shape[1] - start)
             end = start + count
-            outputs.append(mlp(state.weights, query[:, start:end]))
+            # Inductor may return transposed layouts. Canonicalize even singleton
+            # strides so prefill/decode do not exhaust Dynamo's specialization cache.
+            read_queries = query[:, start:end].clone(memory_format=torch.contiguous_format)
+            outputs.append(retrieve(state.weights, read_queries))
             if write:
                 updates = torch.cat((key[:, start:end], value[:, start:end], gates[:, start:end]), -1)
                 state.pending = torch.cat((state.pending, updates), 1)
                 if state.pending.shape[1] == self.config.chunk_size:
                     width = self.config.memory_dim
                     k, v, g = state.pending.split((width, width, 3), -1)
-                    state.weights, state.momentum = chunk_update(
+                    state.weights, state.momentum = update(
                         state.weights, state.momentum, k, v, g[..., 0], g[..., 1], g[..., 2]
                     )
                     state.pending = state.pending[:, :0]
             start = end
-        read = torch.cat(outputs, 1).to(hidden.dtype)
-        return self.output(self.read_norm(read)) * self.mix_gate(hidden).sigmoid()
+        return combine(torch.cat(outputs, 1), hidden, self.read_norm.weight, self.read_norm.bias,
+                       self.output.weight, self.mix_gate.weight, self.mix_gate.bias,
+                       self.read_norm.eps)

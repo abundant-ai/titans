@@ -1,0 +1,18 @@
+{
+  "device": "cpu",
+  "platform": "macOS-26.6-arm64-arm-64bit",
+  "torch": "2.9.1",
+  "dtype": "float32",
+  "threads": 1,
+  "batch_size": 2,
+  "memory_dim": 64,
+  "hidden_dim": 128,
+  "depth": 2,
+  "chunk_size": 32,
+  "repeats": 30,
+  "optimized_median_ms": 0.15741700190119445,
+  "autograd_reference_median_ms": 2.6751249679364264,
+  "speedup_over_literal_reference": 16.993875728973137,
+  "max_absolute_error": 8.940696716308594e-08,
+  "scope": "memory update only; excludes LLM, projections, attention and decoding"
+}

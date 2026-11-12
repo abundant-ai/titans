@@ -59,12 +59,18 @@ class TitansConfig:
     conv_kernel: int = 3
     max_inner_learning_rate: float = 0.01
     gate_bias: float = -4.0
+    compile_kernels: bool = True
+    prefill_chunk_size: int = 256
+    inference_backend: Literal["auto", "torch", "sglang"] = "auto"
+    attention_backend: Literal["auto", "sdpa", "fa3"] = "auto"
+    use_liger: bool = True
+    cuda_graphs: bool = True
 
     def __post_init__(self) -> None:
         """Reject invalid dimensions and update rates before allocating a model."""
         dimensions = (
             self.memory_dim, self.memory_hidden_dim, self.memory_depth,
-            self.chunk_size, self.attention_window, self.conv_kernel,
+            self.chunk_size, self.attention_window, self.conv_kernel, self.prefill_chunk_size,
         )
         if any(value < 1 for value in dimensions):
             raise ValueError("Memory dimensions, chunk size, window and kernel must be positive")
@@ -76,6 +82,10 @@ class TitansConfig:
             raise ValueError("At least one nonnegative memory layer is required")
         if not 0 < self.max_inner_learning_rate <= 1:
             raise ValueError("max_inner_learning_rate must be in (0, 1]")
+        if self.inference_backend not in ("auto", "torch", "sglang"):
+            raise ValueError("Unknown inference backend")
+        if self.attention_backend not in ("auto", "sdpa", "fa3"):
+            raise ValueError("Unknown attention backend")
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,7 @@ class TrainingConfig:
     freeze_backbone: bool = True
     seed: int = 0
     max_grad_norm: float = 1.0
+    activation_checkpointing: bool = True
 
     def __post_init__(self) -> None:
         """Validate the finite token budget and optimizer controls."""

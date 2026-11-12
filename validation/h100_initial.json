@@ -1,0 +1,61 @@
+{
+  "base_model": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+  "backbone_parameters": 1711376384,
+  "total_parameters": 1730360844,
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "torch": "2.9.1+cu129",
+  "sglang": "0.5.7",
+  "liger_kernel": "0.6.4",
+  "config": {
+    "memory_dim": 64,
+    "memory_hidden_dim": 128,
+    "memory_depth": 2,
+    "memory_layers": [
+      0,
+      6,
+      12,
+      18
+    ],
+    "chunk_size": 32,
+    "attention_window": 512,
+    "persistent_tokens": 4,
+    "conv_kernel": 3,
+    "max_inner_learning_rate": 0.01,
+    "gate_bias": -4.0,
+    "compile_kernels": true,
+    "prefill_chunk_size": 256,
+    "inference_backend": "sglang",
+    "attention_backend": "fa3",
+    "use_liger": true
+  },
+  "repeats": 5,
+  "scope": "single active stream; untrained memory adapters; throughput, not QA accuracy",
+  "load_startup_and_warmup_seconds": 72.684630625,
+  "document_tokens": 1006,
+  "ingest_seconds_samples": [
+    0.22576265000000717,
+    0.23630560300000525,
+    0.22305021799999736,
+    0.24369761600001993,
+    0.21435967299998993
+  ],
+  "ingest_tokens_per_second": 4456.007227058896,
+  "generation_128_tokens_seconds_samples": [
+    4.101390817999999,
+    4.110142068000002,
+    4.221557218000001,
+    4.142720213000018,
+    4.070011316999995
+  ],
+  "time_to_first_token_seconds_samples": [
+    0.0360893539999978,
+    0.04212536800000066,
+    0.03465678599999933,
+    0.03782364599999255,
+    0.034581107999997585
+  ],
+  "generation_including_prefill_tokens_per_second": 31.142475827431653,
+  "estimated_decode_tokens_per_second": 31.172890709926115,
+  "median_time_to_first_token_seconds": 0.0360893539999978,
+  "source_preservation_and_clone_check": "passed"
+}

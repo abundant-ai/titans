@@ -1,0 +1,67 @@
+{
+  "base_model": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+  "backbone_parameters": 1711376384,
+  "package_source_sha256": "d4c9330be467fbab7e641852375f8571576086d6c101d423700050803ce8e6a6",
+  "total_parameters": 1730360844,
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "torch": "2.9.1+cu129",
+  "sglang": "0.5.7",
+  "liger_kernel": "0.6.4",
+  "config": {
+    "memory_dim": 64,
+    "memory_hidden_dim": 128,
+    "memory_depth": 2,
+    "memory_layers": [
+      0,
+      6,
+      12,
+      18
+    ],
+    "chunk_size": 32,
+    "attention_window": 512,
+    "persistent_tokens": 4,
+    "conv_kernel": 3,
+    "max_inner_learning_rate": 0.01,
+    "gate_bias": -4.0,
+    "compile_kernels": true,
+    "prefill_chunk_size": 256,
+    "inference_backend": "sglang",
+    "attention_backend": "fa3",
+    "use_liger": true
+  },
+  "repeats": 5,
+  "scope": "single active stream; untrained memory adapters; throughput, not QA accuracy",
+  "profile": {
+    "direct_decode_tokens_per_second": 31.33621768593557,
+    "cpu_operator_profile": "-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                                   LigerRMSNormFunction        11.69%     145.861ms        13.82%     172.535ms     110.035us       2.581ms         2.18%       2.584ms       1.648us          1568  \n                                               aten::mm        10.21%     127.419ms        13.53%     168.869ms      27.219us      58.954ms        49.77%      58.954ms       9.503us          6204  \n## Call CompiledFxGraph fmq5zok34kfzse2fgkcvurxjdqd3...         9.67%     120.653ms        20.81%     259.737ms     338.199us       0.000us         0.00%      10.056ms      13.093us           768  \n                                       cudaLaunchKernel         5.45%      68.051ms         5.45%      68.051ms       5.620us       0.000us         0.00%       0.000us       0.000us         12108  \n                                      LigerRopeFunction         4.12%      51.432ms         5.02%      62.676ms      81.609us       1.118ms         0.94%       1.118ms       1.456us           768  \n                                       cuLaunchKernelEx         3.99%      49.782ms         3.99%      49.782ms       5.596us       0.000us         0.00%       0.000us       0.000us          8896  \n                               TorchDynamo Cache Lookup         3.95%      49.295ms         4.51%      56.348ms      48.744us       0.000us         0.00%       0.000us       0.000us          1156  \n                                              aten::cat         3.89%      48.579ms         6.29%      78.537ms      15.632us      23.143ms        19.54%      23.143ms       4.607us          5024  \n                                   LigerSiLUMulFunction         3.88%      48.415ms         4.86%      60.676ms      79.005us       1.611ms         1.36%       1.611ms       2.098us           768  \n                             Torch-Compiled Region: 3/1         3.54%      44.138ms        25.81%     322.092ms     419.391us       0.000us         0.00%      10.056ms      13.093us           768  \n                                            aten::empty         2.92%      36.421ms         2.92%      36.421ms       3.683us       0.000us         0.00%       0.000us       0.000us          9888  \n                                              aten::bmm         2.55%      31.845ms         6.38%      79.576ms      50.750us       3.224ms         2.72%       4.848ms       3.092us          1568  \n                                         cuLaunchKernel         2.20%      27.458ms         2.20%      27.458ms       5.384us       0.000us         0.00%       0.000us       0.000us          5100  \n                                        aten::transpose         1.90%      23.747ms         2.77%      34.519ms       2.486us       0.000us         0.00%       0.000us       0.000us         13888  \n                                           aten::matmul         1.83%      22.817ms        15.24%     190.267ms      34.976us       0.000us         0.00%      56.101ms      10.313us          5440  \n## Call CompiledFxGraph f6aclk7f6oubx25upppqmkqehngr...         1.79%      22.383ms         4.14%      51.625ms     403.318us       0.000us         0.00%       2.401ms      18.761us           128  \n                                            aten::copy_         1.63%      20.390ms         3.99%      49.757ms      14.951us       8.017ms         6.77%       8.017ms       2.409us          3328  \n                                        cudaMemcpyAsync         1.59%      19.783ms         1.59%      19.783ms      10.846us       0.000us         0.00%       0.000us       0.000us          1824  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \nSelf CPU time total: 1.248s\nSelf CUDA time total: 118.446ms\n",
+    "cuda_operator_profile": "-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \n## Call CompiledFxGraph fmq5zok34kfzse2fgkcvurxjdqd3...         0.00%       0.000us         0.00%       0.000us       0.000us     184.112ms       155.44%     184.112ms     239.729us           768  \n                                               aten::mm        10.21%     127.419ms        13.53%     168.869ms      27.219us      58.954ms        49.77%      58.954ms       9.503us          6204  \n## Call CompiledFxGraph f6aclk7f6oubx25upppqmkqehngr...         0.00%       0.000us         0.00%       0.000us       0.000us      39.268ms        33.15%      39.268ms     306.782us           128  \n                                              aten::cat         3.89%      48.579ms         6.29%      78.537ms      15.632us      23.143ms        19.54%      23.143ms       4.607us          5024  \n                      nvjet_tst_64x8_64x16_2x1_v_bz_TNT         0.00%       0.000us         0.00%       0.000us       0.000us      23.074ms        19.48%      23.074ms      15.022us          1536  \n                      nvjet_tst_64x8_64x16_4x1_v_bz_TNT         0.00%       0.000us         0.00%       0.000us       0.000us      19.964ms        16.85%      19.964ms       5.999us          3328  \n## Call CompiledFxGraph fjqzys5zd4anqijs3vxnqan35w26...         0.00%       0.000us         0.00%       0.000us       0.000us      13.193ms        11.14%      13.193ms     103.069us           128  \nvoid at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us      12.142ms        10.25%      12.142ms       7.905us          1536  \n               nvjet_tst_64x8_64x16_2x1_v_bz_splitK_TNT         0.00%       0.000us         0.00%       0.000us       0.000us      10.611ms         8.96%      10.611ms      13.817us           768  \n                                        sgl_kernel::fwd         1.36%      17.027ms         2.41%      30.018ms      39.086us      10.113ms         8.54%      10.113ms      13.167us           768  \nvoid cutlass::device_kernel<flash::enable_sm90_or_la...         0.00%       0.000us         0.00%       0.000us       0.000us      10.113ms         8.54%      10.113ms      13.167us           768  \n                                            aten::copy_         1.63%      20.390ms         3.99%      49.757ms      14.951us       8.017ms         6.77%       8.017ms       2.409us          3328  \n## Call CompiledFxGraph fzxnzxb6yr4cnr4ldprpaa2hp2my...         0.00%       0.000us         0.00%       0.000us       0.000us       7.898ms         6.67%       7.898ms      61.701us           128  \nvoid at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us       7.811ms         6.59%       7.811ms       5.086us          1536  \nvoid at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       6.111ms         5.16%       6.111ms       3.979us          1536  \n                                              aten::bmm         2.55%      31.845ms         6.38%      79.576ms      50.750us       3.224ms         2.72%       4.848ms       3.092us          1568  \n## Call CompiledFxGraph fuk2mdouafpi3xts2ci32hanbrqf...         0.00%       0.000us         0.00%       0.000us       0.000us       3.026ms         2.55%       3.026ms     756.542us             4  \n                                   LigerRMSNormFunction        11.69%     145.861ms        13.82%     172.535ms     110.035us       2.581ms         2.18%       2.584ms       1.648us          1568  \n-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  \nSelf CPU time total: 1.248s\nSelf CUDA time total: 118.446ms\n"
+  },
+  "load_startup_and_warmup_seconds": 145.67850929500003,
+  "document_tokens": 1006,
+  "ingest_seconds_samples": [
+    0.2319509710000034,
+    0.2436589339999955,
+    0.23440492000003132,
+    0.22775230100000954,
+    0.23239068699996324
+  ],
+  "ingest_tokens_per_second": 4328.917018951621,
+  "generation_128_tokens_seconds_samples": [
+    4.311314805999984,
+    4.5568968489999975,
+    4.2749036209999645,
+    4.286490311000023,
+    4.272979454999984
+  ],
+  "time_to_first_token_seconds_samples": [
+    0.03791917699999203,
+    0.04112529399998266,
+    0.038693894000005,
+    0.03728083499999002,
+    0.038670561000003545
+  ],
+  "generation_including_prefill_tokens_per_second": 29.86125961174471,
+  "estimated_decode_tokens_per_second": 29.89769045638046,
+  "median_time_to_first_token_seconds": 0.038670561000003545,
+  "source_preservation_and_clone_check": "passed"
+}
