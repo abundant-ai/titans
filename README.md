@@ -6,7 +6,7 @@
 
 <p align="center">Long-term neural memory for pretrained language models.</p>
 
-Abundant's research implementation for attaching memory to a pretrained Llama,
+Abundant's research implementation for attaching memory to a pretrained Llama or Qwen2,
 post-training it on document streams, and asking questions as new documents arrive.
 One `TitansModel` owns the trained parameters; each `StreamState` holds an independent
 stream's memory.
@@ -45,9 +45,9 @@ the number of documents that should have arrived before asking it.
 ## Attach and post-train
 
 `from_pretrained` loads a backbone and attaches **new, untrained** memory modules.
-Pass a local Hugging Face Llama checkpoint directory or an accessible model ID.
-The example uses a local directory so it does not assume model access or download
-weights automatically.
+Pass a local Hugging Face Llama or Qwen2 checkpoint directory or an accessible model ID.
+The default backbone for examples and benchmarks is `Qwen/Qwen2.5-1.5B-Instruct`.
+The example downloads its weights on first use; a local checkpoint path also works.
 
 ```python
 from pathlib import Path
@@ -63,7 +63,7 @@ from titans import (
 )
 
 model = TitansModel.from_pretrained(
-    "./backbone",  # An existing Llama checkpoint and tokenizer.
+    "Qwen/Qwen2.5-1.5B-Instruct",
     config=TitansConfig(memory_layers=(0,), chunk_size=32),
     device="cpu",  # For CUDA/BF16, follow the GPU setup below.
 )
@@ -108,7 +108,7 @@ that boundary do not receive training gradients through earlier writes.
 
 ## Post-training recipe
 
-Start with a 10M-token pilot on SmolLM2-1.7B-Instruct, keeping the backbone frozen
+Start with a 10M-token pilot on Qwen2.5-1.5B-Instruct, keeping the backbone frozen
 and training the memory components and persistent prefix. The goal is to learn
 how to store, retrieve and revise facts as documents arrive. This is a proposed
 recipe: the numerical implementation has been tested, but this corpus mix and
@@ -206,26 +206,32 @@ are $0.001097 per H100 GPU-second, $0.0000131 per CPU-core-second and $0.0000022
 per GiB-second of host RAM. One H100 with 8 physical CPU cores and 32 GiB RAM is
 about $4.58/hour at those rates, before credits or pricing premiums.
 
-Full 1.7B-model post-training throughput has not been measured. The table assumes
-500 to 1,500 processed training tokens/s, a frozen backbone, BF16 and one pass.
-Freezing the backbone still requires propagating gradients through it to train
-the inserted memory modules. The measured 182.7 generated tokens/s from inference
-does not determine training throughput.
+The [matched H100 benchmark](validation/h100_comparison.json) measured frozen-backbone
+post-training at 1,437 tokens/s for SmolLM2 and 1,272 tokens/s for Qwen2.5, excluding
+compilation and checkpoint writing. Each model completed 32,768 measured tokens
+and four optimizer steps after 8,192 warmup tokens, with a 2,048-token
+backpropagation window and Liger enabled.
 
-| Total processed training tokens | Estimated processing time | Compute at $4.58/hour |
-| --- | --- | --- |
-| 100k | 1.1 to 3.3 minutes | $0.09 to $0.25 |
-| 1M | 11 to 33 minutes | $0.85 to $2.55 |
-| 10M | 1.9 to 5.6 hours | $8.50 to $25.50 |
-| 100M | 19 to 56 hours | $85 to $255 |
+| Backbone | Measured training tokens/s | Extrapolated time for 10M tokens | Processing compute at $4.58/hour |
+| --- | ---: | ---: | ---: |
+| SmolLM2-1.7B-Instruct | 1,437 | 1.93 hours | $8.86 |
+| Qwen2.5-1.5B-Instruct | 1,272 | 2.18 hours | $10.01 |
+
+These are extrapolations from repeated synthetic document text with an LM
+objective. They are not measurements of the proposed mixed document/QA corpus
+or a full 10M-token run. SmolLM2's mean loss rose from 0.24 during warmup to 6.55
+in the timed run; calibrate the training recipe before committing to the pilot.
+Finite optimizer updates establish that training executes, not that it improves
+memory quality. Both models still need held-out document QA evaluation.
 
 Calculate processing cost as
 `processed_tokens / training_tokens_per_second / 3600 * hourly_rate`.
-The table excludes startup, compilation, evaluation, data preparation and
-teacher-model calls; startup can dominate a small document run.
-Three passes through 10M tokens count as 30M processed tokens and cost roughly
-three times one pass. Recalculate after calibration, especially if changing the
-backpropagation horizon, memory dimensions or backbone training policy.
+The table excludes startup, compilation, checkpointing, evaluation, data
+preparation and teacher-model calls. In this cached environment, each 8,192-token
+warmup took about 21 seconds including checkpointing; first-time setup can take
+longer. The measured checkpoint writes took 2.5 to 2.9 seconds. Three passes
+through 10M tokens count as 30M processed tokens. Recalibrate when changing the
+objective, backpropagation horizon, memory dimensions or backbone training policy.
 
 ## Ingest and answer
 
@@ -297,14 +303,16 @@ use the last committed weights. Incomplete chunks carry across document boundari
 increasing chunk size changes update and retrieval timing as well as throughput.
 
 The public model currently supports one stream per call and one device. It accepts
-unquantized `LlamaForCausalLM` backbones with static default, linear or Llama 3 RoPE.
+unquantized `LlamaForCausalLM` and `Qwen2ForCausalLM` backbones with static default,
+linear or Llama 3 RoPE.
 Other architectures, sharded device maps and quantized backbones are unsupported.
 
 ## CUDA inference and post-training
 
 CUDA inference defaults to a local SGLang engine with a custom Titans model.
-The selected H100 backbone is SmolLM2-1.7B-Instruct, below the two-billion-parameter
-limit. Use BF16 and install the Linux GPU dependencies with `uv sync --extra gpu`.
+The default H100 backbone is Qwen2.5-1.5B-Instruct. SmolLM2-1.7B-Instruct remains
+supported as a comparison baseline; both are below two billion parameters.
+Use BF16 and install the Linux GPU dependencies with `uv sync --extra gpu`.
 
 Memory kernels use `torch.compile(fullgraph=True)` by default. CUDA operations use
 Liger RMSNorm, RoPE and SwiGLU; training uses its fused linear cross-entropy loss.
@@ -323,6 +331,34 @@ See [GPU setup and benchmark commands](docs/gpu_runtime.md),
 [equation alignment and verification scope](docs/paper_alignment.md), and
 [recorded validation results](validation/README.md).
 
+
+## Matched H100 results
+
+Both models ran sequentially on the same H100 80GB in BF16, using SGLang 0.5.7,
+FA3 inference, Liger and compiled memory kernels. Memory settings were identical:
+layers `(0, 6, 12, 18)`, dimensions 64/128, a 512-token attention window, 32-token
+write chunks and four persistent tokens.
+
+| Measurement | SmolLM2-1.7B | Qwen2.5-1.5B |
+| --- | ---: | ---: |
+| Ingestion | 4,823 tokens/s | 4,942 tokens/s |
+| Generation, including query prefill | 184.4 tokens/s | 192.0 tokens/s |
+| One-token request latency | 32.0 ms | 34.6 ms |
+| Post-training, excluding checkpoint writing | 1,437 tokens/s | 1,272 tokens/s |
+| Peak allocated training GPU memory | 5.88 GiB | 5.07 GiB |
+
+Qwen generated about 4% faster in this run and used about 14% less training memory.
+SmolLM2 trained about 13% faster. The inference differences are small and should
+be remeasured for the intended workload. Inference uses five warmed repetitions
+and forced 128-token outputs; training uses four measured optimizer steps on
+synthetic LM data. Training attention uses native non-cuDNN SDPA, while the
+Titans memory kernels remain JIT-compiled. These measurements do not establish
+long-term recall quality.
+
+The [raw comparison](validation/h100_comparison.json) records samples, parameter
+counts, configuration and source hashes. See the [validation record](validation/README.md)
+for verification and the CUDA compatibility fixes needed by Qwen.
+
 ## Development
 
 ```bash
@@ -338,7 +374,7 @@ document recall still requires post-training and held-out streams.
 
 | File | Responsibility |
 | --- | --- |
-| [`titans/model.py`](titans/model.py) | Public entry points, Llama integration and checkpoints |
+| [`titans/model.py`](titans/model.py) | Public entry points, Llama/Qwen2 integration and checkpoints |
 | [`titans/memory.py`](titans/memory.py) | Neural memory and chunk update |
 | [`titans/state.py`](titans/state.py) | Stream ownership, caches and independent copies |
 | [`titans/training.py`](titans/training.py) | Post-training and token-budget accounting |

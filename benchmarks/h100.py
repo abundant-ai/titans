@@ -16,7 +16,7 @@ from titans import AnswerConfig, Document, Question, TitansConfig, TitansModel
 from titans.cuda_graphs import GraphDecoder
 from titans.serving import RequestControl
 
-BASE_MODEL = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 def source_digest() -> str:
@@ -80,6 +80,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--model", default=BASE_MODEL)
     args = parser.parse_args()
     torch.set_num_threads(4)
     torch.manual_seed(31)
@@ -90,11 +91,11 @@ def main() -> None:
                           persistent_tokens=4, inference_backend="sglang", attention_backend="fa3",
                           compile_kernels=True, use_liger=True)
     started = time.perf_counter()
-    model = TitansModel.from_pretrained(BASE_MODEL, config, device="cuda", dtype=torch.bfloat16)
+    model = TitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16)
     backbone_parameters = sum(p.numel() for p in model.backbone.parameters())
     assert backbone_parameters < 2_000_000_000
     report: dict[str, object] = {
-        "base_model": BASE_MODEL, "backbone_parameters": backbone_parameters,
+        "base_model": args.model, "backbone_parameters": backbone_parameters,
         "package_source_sha256": source_digest(),
         "total_parameters": sum(p.numel() for p in model.parameters()),
         "gpu": torch.cuda.get_device_name(), "torch": str(torch.__version__),
@@ -160,6 +161,8 @@ def main() -> None:
         first_seconds = statistics.median(first_token_samples)
         report.update({
             "document_tokens": tokens_per_document,
+            "document_characters": len(document.text),
+            "ingest_characters_per_second": len(document.text) / ingest_seconds,
             "ingest_seconds_samples": ingest_samples,
             "ingest_tokens_per_second": tokens_per_document / ingest_seconds,
             "generation_128_tokens_seconds_samples": generation_samples,

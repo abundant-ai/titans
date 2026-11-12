@@ -39,6 +39,8 @@ def test_compiled_update_and_outer_gradients() -> None:
 
 def test_compiled_model_and_training_match_eager(tiny_model: TitansModel, tmp_path: Path) -> None:
     """Compare compiled/eager forwards and optimizer results with activation checkpointing."""
+    # Each architecture gets an independent compiler session, as in serving workers.
+    torch.compiler.reset()
     compiled = TitansModel(tiny_model.backbone, tiny_model.tokenizer,
                            replace(tiny_model.config, compile_kernels=True))
     compiled.load_state_dict(tiny_model.state_dict())

@@ -1,10 +1,25 @@
 # GPU runtime
 
-The selected backbone is
-[`HuggingFaceTB/SmolLM2-1.7B-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct).
-Its [configuration](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct/blob/main/config.json)
-uses `LlamaForCausalLM`, 24 layers and head dimension 64. The H100 benchmark checks
-the actual parameter count is below two billion before measuring anything.
+`Qwen/Qwen2.5-1.5B-Instruct` is the default backbone for examples and benchmarks.
+`HuggingFaceTB/SmolLM2-1.7B-Instruct` remains available as a comparison baseline.
+Both use the same public API, memory kernels and SGLang worker. Select either model ID
+in `TitansModel.from_pretrained`; checkpoints retain the backbone architecture.
+
+| Backbone | HF architecture | Layers | Query/KV heads | Head dimension |
+| --- | --- | ---: | ---: | ---: |
+| SmolLM2-1.7B-Instruct | `LlamaForCausalLM` | 24 | 32/32 | 64 |
+| Qwen2.5-1.5B-Instruct | `Qwen2ForCausalLM` | 28 | 12/2 | 128 |
+
+Sources: [SmolLM2 configuration](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct/blob/main/config.json)
+and [Qwen2.5 configuration](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/main/config.json).
+Qwen's Q/K/V projection biases and grouped KV heads are preserved in both eager
+and compiled paths. Its smaller KV cache does not by itself establish a speedup;
+the benchmark measures the complete Titans serving path.
+
+Both backbones use the library's document/question wrappers in training and
+inference. The library does not apply their native chat templates. Post-training
+should use these same wrappers; this integration does not claim unchanged
+out-of-the-box instruction-following quality.
 
 The CUDA environment pins PyTorch 2.9.1, Transformers 4.57.1, SGLang 0.5.7 and
 Liger Kernel 0.6.4. Install on Linux with `uv sync --extra gpu`. The Modal runner
@@ -15,7 +30,7 @@ import torch
 from titans import TitansConfig, TitansModel
 
 model = TitansModel.from_pretrained(
-    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "Qwen/Qwen2.5-1.5B-Instruct",
     TitansConfig(
         memory_layers=(0, 6, 12, 18),
         memory_dim=64,
@@ -41,9 +56,19 @@ model.close()
 `compile_kernels=True` is the default. Tensor-only kernels use
 [`torch.compile(fullgraph=True)`](https://docs.pytorch.org/docs/2.9/generated/torch.compile.html),
 including the memory update, memory projections, retrieval and output gate.
-The Torch path also compiles attention, RMSNorm and Llama's MLP. Full-graph capture
+The CPU path also compiles attention, RMSNorm and the host MLP.
+CUDA attention uses native fused kernels and Liger RoPE: compiling the complete
+SDPA wrapper produced nonfinite Qwen gradients in PyTorch 2.9.1, even with Liger
+disabled. Memory kernels remain compiled on CUDA. Full-graph capture
 rejects unsupported graph breaks. CPU development can set `compile_kernels=False`
 to avoid compilation startup costs.
+
+The two biased memory-projection kernels disable Inductor's shape-padding pass.
+[SGLang 0.5.7's deterministic `addmm` replacement](https://github.com/sgl-project/sglang/blob/v0.5.7/python/sglang/srt/batch_invariant_ops/batch_invariant_ops.py)
+does not accept the `alpha`/`beta` keywords used by that pass's benchmark. This
+otherwise prevents Qwen-width memory from compiling in the serving worker.
+Full-graph JIT remains enabled, and a CUDA regression test covers the affected
+Qwen dimensions under SGLang's deterministic mode.
 
 On CUDA, Liger supplies RMSNorm, RoPE, SwiGLU and the fused linear cross-entropy loss.
 The fused loss avoids materializing the full token-by-vocabulary logit matrix
@@ -76,7 +101,7 @@ This adapter currently allows one active request and one GPU. Native radix-prefi
 sharing, native SGLang CUDA graphs, speculative decoding and overlapping scheduling are disabled
 because their state handling has not been extended to include Titans memory.
 The separate Titans graph runner includes the complete memory state.
-Those limits matter for throughput comparisons with an ordinary SGLang Llama.
+Those limits matter for throughput comparisons with an ordinary SGLang model.
 The client retains its training model while the worker loads an inference copy;
 both copies occupy GPU memory. `fit` shuts down a running inference worker first,
 then a subsequent inference call exports the updated weights and starts a new one.
@@ -97,7 +122,12 @@ This preserves the explicit local-plus-prefix mask; dropping the prefix or using
 full-history attention would change the model.
 
 The configured path requires Hopper hardware and BF16 or FP16. Training uses
-autograd-capable SDPA; SGLang's cached FA3 entry point is used for inference.
+autograd-capable SDPA with cuDNN excluded; SGLang's cached FA3 entry point is used
+for inference. A pretrained Qwen training run produced NaNs in
+`ScaledDotProductCudnnAttentionBackward0`, including with JIT and Liger disabled.
+The reference run completed with finite gradients when cuDNN was excluded,
+without changing the memory settings or 2,048-token backpropagation window.
+The backend restriction is scoped to `fit` and applies to both backbones.
 [FA3 hardware requirements](https://github.com/Dao-AILab/flash-attention#flashattention-3-beta-release)
 and [SGLang's external-model registry](https://github.com/sgl-project/sglang/blob/v0.5.7/python/sglang/srt/models/registry.py)
 are upstream dependencies, not additional Titans algorithm requirements.
@@ -107,7 +137,8 @@ are upstream dependencies, not additional Titans algorithm requirements.
 ```bash
 uv run pytest -q
 uv run python -m benchmarks.memory_update --device cuda --output validation/memory_h100.json
-uv run python -m benchmarks.h100 --output validation/h100_inference.json
+uv run python -m benchmarks.h100 --output validation/h100_qwen_inference.json
+uv run python -m benchmarks.posttraining --output validation/h100_qwen_posttraining.json
 ```
 
 For the configured Modal account, the task runner uploads only the package, tests
@@ -117,9 +148,31 @@ and benchmark scripts and uses one H100 per job:
 uv run --with modal modal run --env testing benchmarks/modal_h100.py --run-benchmark
 ```
 
+Both standalone benchmarks default to Qwen2.5-1.5B-Instruct. Pass
+`--model HuggingFaceTB/SmolLM2-1.7B-Instruct` to select the comparison backbone.
+The Modal `--run-benchmark` command writes `validation/h100_qwen_inference.json`.
+
 Compilation and engine startup are recorded separately. Timed requests run after
 warmup. The report includes actual GPU identity, package versions, parameter
 counts, document token count, raw latency samples, ingestion tokens/second,
 time to first token, and generation speed. Decode-only throughput is an estimate
 from matched 128-token and one-token requests; the report also includes the direct
 end-to-end 128-token rate. The adapters are untrained for this speed test.
+
+
+To compare both backbones on the same physical H100, including real post-training:
+
+```bash
+uv run --with modal modal run --env testing benchmarks/modal_h100.py --compare
+```
+
+The comparison writes `validation/h100_comparison.json`. It runs each measurement
+in a fresh process on the same GPU. Inference uses the same document text,
+question and 128-token output limit, with five repetitions after warmup. Token
+counts can differ between tokenizers; character throughput is also recorded.
+Post-training uses identical text and exact token budgets: 8,192 warmup tokens,
+then 32,768 measured tokens, with four AdamW steps. The frozen-backbone LM objective
+uses 2,048-token backpropagation windows, 8,192 tokens per step, activation
+checkpointing and Liger's fused loss. Warmup, training and checkpoint times are
+recorded separately. This synthetic workload measures execution speed; it does
+not evaluate the proposed mixed document/QA training recipe.

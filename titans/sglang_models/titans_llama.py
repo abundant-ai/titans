@@ -15,7 +15,7 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.sampling.custom_logit_processor import CustomLogitProcessor
 from torch import Tensor, nn
-from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaConfig, Qwen2Config
 
 from titans.cuda_graphs import GraphDecoder
 from titans.model import TitansModel
@@ -45,13 +45,13 @@ class TitansForCausalLM(nn.Module):
     """Single-device Titans implementation registered as an external SGLang model."""
 
     def __init__(
-        self, config: LlamaConfig, quant_config: QuantizationConfig | None = None,
+        self, config: LlamaConfig | Qwen2Config, quant_config: QuantizationConfig | None = None,
         prefix: str = "",
     ) -> None:
         """Construct the worker architecture; SGLang's loader supplies backbone weights.
 
         Args:
-            config: Exported Llama config containing Titans settings and adapter path.
+            config: Exported Llama or Qwen2 config containing Titans settings and adapter path.
             quant_config: Must be None; quantized fast-memory inference is unsupported.
             prefix: SGLang module prefix, unused for this single-device implementation.
         """
@@ -64,14 +64,16 @@ class TitansForCausalLM(nn.Module):
         settings["attention_backend"] = "fa3"
         self.adapter_path = Path(config.titans_adapter_path)
         tokenizer = AutoTokenizer.from_pretrained(config._name_or_path, local_files_only=True)
-        self.titans = TitansModel(LlamaForCausalLM(config), tokenizer, TitansConfig(**settings))
+        self.titans = TitansModel(
+            AutoModelForCausalLM.from_config(config), tokenizer, TitansConfig(**settings),
+        )
         self.registry = StateRegistry(self.titans)
         self.decoder = GraphDecoder(self.titans)
         self.config = config
 
     @torch.no_grad()
     def load_weights(self, weights: Iterable[tuple[str, Tensor]]) -> None:
-        """Load original Llama names and restore the trained memory adapter.
+        """Load original backbone parameter names and restore the trained memory adapter.
 
         Args:
             weights: SGLang's checkpoint tensor iterator.

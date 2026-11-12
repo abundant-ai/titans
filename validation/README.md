@@ -1,10 +1,86 @@
 # Validation record
 
-The CPU suite passes 55 tests, and all 10 CUDA tests pass on the H100. CUDA tests
+The CPU suite passes 74 tests, and all 16 CUDA tests pass on the H100. CUDA tests
 are skipped on the local Mac. The CPU checks include the independent equation
 oracle, outer gradients, finite differences, compiled/eager agreement, training,
 state ownership and checkpoint restoration. Ruff and the explicit-type/docstring
 audit pass.
+
+
+## Qwen2.5 versus SmolLM2 on one H100
+
+[`h100_comparison.json`](h100_comparison.json) records the completed paired run.
+[`h100_comparison_verification.json`](h100_comparison_verification.json) links the
+Modal app and verifies that all four measurements match the local package hash,
+use identical Titans settings and share one physical H100 80GB. Both backbones
+are below two billion parameters: 1,711,376,384 for SmolLM2 and 1,543,714,304 for Qwen.
+
+| Measurement | SmolLM2-1.7B | Qwen2.5-1.5B |
+| --- | ---: | ---: |
+| Ingestion | 4,823 tokens/s | 4,942 tokens/s |
+| Ingestion of identical text | 22,054 characters/s | 22,618 characters/s |
+| Generation including query prefill | 184.4 tokens/s | 192.0 tokens/s |
+| Estimated decode-only rate | 191.8 tokens/s | 201.0 tokens/s |
+| One-token request latency | 32.0 ms | 34.6 ms |
+| Training excluding checkpoint writing | 1,437 tokens/s | 1,272 tokens/s |
+| Training including checkpoint writing | 1,276 tokens/s | 1,160 tokens/s |
+| Measured training time, excluding checkpoint | 22.81 seconds | 25.77 seconds |
+| Checkpoint writing | 2.88 seconds | 2.48 seconds |
+| Peak allocated training memory | 5.88 GiB | 5.07 GiB |
+| Trainable parameters | 18,984,460 | 11,109,900 |
+
+The shared memory configuration has dimensions 64/128, two memory MLP layers,
+placements `(0, 6, 12, 18)`, 32-token write chunks, a 512-token attention window,
+four persistent tokens and 256-token prefill blocks. Different backbone widths
+still produce different adapter parameter counts. Both use BF16, JIT memory
+kernels and Liger. CUDA inference runs through SGLang with FA3 and Titans CUDA
+graphs; training uses native non-cuDNN SDPA with autograd.
+
+Inference measures medians of five requests after warmup. Each model receives
+the same 4,600-character document and question; the document encodes to 1,006
+SmolLM2 tokens or 1,005 Qwen tokens. Outputs are forced to 128 tokens. Timing
+includes the generation request, state branching and question prefill, but
+excludes the subsequent branch-release request. One-token latency is a proxy for
+time to first token, measured with a complete one-token request rather than a
+streaming response. Decode-only speed subtracts that latency from a matched
+128-token request. Source preservation, cloning and seeded sampling passed.
+
+Training calls the public `fit` entry point with a frozen backbone, a
+2,048-token backpropagation window, 8,192 tokens per optimizer step, learning rate
+`1e-4` and activation checkpointing. Each model processes 8,192 warmup tokens,
+then 32,768 measured tokens and four AdamW steps on repeated synthetic document
+text. Warmup updates are retained, but the measured `fit` starts a new optimizer
+and document stream. Both runs update the memory gates, preserve the sampled
+frozen backbone tensor and finish with finite memory parameters and loss.
+Checkpoint writes are timed separately; peak memory is PyTorch's allocated
+memory in the training process, not total device reservation.
+
+The loss values are not a quality comparison. SmolLM2's warmup/timed mean losses
+were 0.238/6.551; Qwen's were 0.0221/0.00587. The repeated text, different tokenizers,
+stream positions and short optimization run do not establish useful document
+memory. SmolLM2's rising loss needs recipe calibration before a larger training
+run. Held-out QA quality remains unmeasured for both models.
+
+### Runtime issues found and corrected
+
+[`qwen_runtime_fixes.json`](qwen_runtime_fixes.json) records the diagnostics and
+Modal runs. Qwen exposed three problems that tiny random-model checks missed:
+
+- SGLang's deterministic `addmm` replacement rejects the `alpha`/`beta` arguments
+  used by Inductor's shape-padding benchmark. The two biased memory-projection
+  kernels now disable that optimization while retaining full-graph JIT.
+- The first nonfinite gradient in an unfused Qwen run came from cuDNN attention
+  backward. Excluding cuDNN allowed the reference run to complete without changing
+  the memory settings or backpropagation window.
+- The complete JIT attention wrapper still produced nonfinite gradients with
+  Liger disabled. CUDA attention now uses native fused kernels outside that
+  wrapper. Memory kernels remain compiled; Liger RoPE, RMSNorm, SwiGLU and fused
+  loss stay enabled. CPU attention retains its compiled path.
+
+The final H100 run passes 16 tests, including the SGLang deterministic-mode
+regression, rotary output/gradient equivalence and both architectures' training
+and CUDA graph checks. The full pretrained benchmarks then verify successful
+optimizer updates, which the earlier failing runs could not provide.
 
 ## CPU memory-update benchmark
 
@@ -39,9 +115,9 @@ The example answer was `Rome.`. The relevant facts fit inside the attention
 window, so this is an execution and checkpoint check, not evidence of long-term
 memory quality.
 
-## H100 verification
+## Earlier SmolLM2-only H100 verification
 
-The final run used an NVIDIA H100 80GB HBM3 in the abundant-ai `testing`
+The earlier SmolLM2-only run used an NVIDIA H100 80GB HBM3 in the abundant-ai `testing`
 environment. All 10 GPU checks passed, including FA3/local-mask equivalence,
 Liger loss/gradient comparisons, compiled memory gradients, a complete BF16
 post-training step on a small test model, and CUDA graph state equivalence.
@@ -57,8 +133,8 @@ parameters and 1,730,360,844 parameters including memory adapters.
 | Direct numerical decode, without SGLang scheduling | 237.0 tokens/s |
 
 [`h100_inference.json`](h100_inference.json) contains the raw five-repetition
-samples, configuration, profiler output and uploaded-package SHA-256. The final
-local package matches that hash. [`h100_runtime.json`](h100_runtime.json) records
+samples, configuration, profiler output and uploaded-package SHA-256. That hash
+identifies the earlier implementation before Qwen support. [`h100_runtime.json`](h100_runtime.json) records
 PyTorch 2.9.1+cu129, SGLang 0.5.7, Liger 0.6.4 and the FA3 entry point.
 [`h100_verification.json`](h100_verification.json) links the completed Modal run
 and records the test results.

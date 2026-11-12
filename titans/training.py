@@ -2,11 +2,13 @@
 
 import time
 from collections.abc import Iterable
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .state import StreamState
 from .types import TrainingConfig, TrainingEpisode, TrainingResult
@@ -209,8 +211,13 @@ def fit_model(
     run = _TrainingRun(model, config)
     device = model.backbone.model.embed_tokens.weight.device
     devices = [device.index or 0] if device.type == "cuda" else []
+    # cuDNN SDPA backward produced NaNs on pretrained Qwen2.5 with the local/prefix
+    # mask. Keep the same attention equation using the other autograd backends.
+    attention_context = sdpa_kernel([
+        SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH,
+    ]) if device.type == "cuda" else nullcontext()
     try:
-        with torch.random.fork_rng(devices=devices):
+        with torch.random.fork_rng(devices=devices), attention_context:
             torch.manual_seed(config.seed)
             for episode in episodes:
                 if run.tokens >= config.max_tokens:

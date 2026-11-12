@@ -1,0 +1,314 @@
+{
+  "device": "NVIDIA H100 80GB HBM3, GPU-0e8c5f63-5039-221a-9a01-c2e82c764974",
+  "gpu_tests": "................                                                         [100%]\n=============================== warnings summary ===============================\ntests/test_gpu.py::test_qwen_memory_jit_with_sglang_determinism\n  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute\n\ntests/test_gpu.py::test_qwen_memory_jit_with_sglang_determinism\n  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute\n\ntests/test_gpu.py::test_qwen_memory_jit_with_sglang_determinism\n  /usr/local/lib/python3.12/dist-packages/torch/library.py:364: UserWarning: Warning only once for all operators,  other operators may also be overridden.\n    Overriding a previously registered kernel for the same operator and the same dispatch key\n    operator: aten::mm(Tensor self, Tensor mat2) -> Tensor\n      registered at /pytorch/build/aten/src/ATen/RegisterSchema.cpp:6\n    dispatch key: CUDA\n    previous kernel: registered at /pytorch/aten/src/ATen/LegacyBatchingRegistrations.cpp:1079\n         new kernel: registered at /sgl-workspace/sglang/python/sglang/srt/batch_invariant_ops/batch_invariant_ops.py:946 (Triggered internally at /pytorch/aten/src/ATen/core/dispatch/OperatorEntry.cpp:218.)\n    self.m.impl(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n16 passed, 3 warnings in 63.42s (0:01:03)\n",
+  "models": {
+    "qwen2_5": {
+      "inference": {
+        "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+        "backbone_parameters": 1543714304,
+        "package_source_sha256": "86c1aa8886ca086e911ed8cc080c4670a0bc7499db276d1d28437dec84a116e8",
+        "total_parameters": 1554824204,
+        "gpu": "NVIDIA H100 80GB HBM3",
+        "torch": "2.9.1+cu129",
+        "sglang": "0.5.7",
+        "liger_kernel": "0.6.4",
+        "config": {
+          "memory_dim": 64,
+          "memory_hidden_dim": 128,
+          "memory_depth": 2,
+          "memory_layers": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "chunk_size": 32,
+          "attention_window": 512,
+          "persistent_tokens": 4,
+          "conv_kernel": 3,
+          "max_inner_learning_rate": 0.01,
+          "gate_bias": -4.0,
+          "compile_kernels": true,
+          "prefill_chunk_size": 256,
+          "inference_backend": "sglang",
+          "attention_backend": "fa3",
+          "use_liger": true,
+          "cuda_graphs": true
+        },
+        "repeats": 5,
+        "scope": "single active stream; untrained memory adapters; throughput, not QA accuracy",
+        "load_startup_and_warmup_seconds": 46.183207687999996,
+        "document_tokens": 1005,
+        "document_characters": 4600,
+        "ingest_characters_per_second": 22618.174565704794,
+        "ingest_seconds_samples": [
+          0.20227664800000866,
+          0.20337627099999622,
+          0.2034446209999885,
+          0.20756597700000157,
+          0.20210393700000395
+        ],
+        "ingest_tokens_per_second": 4941.579443159417,
+        "generation_128_tokens_seconds_samples": [
+          0.6666128969999932,
+          0.665125181999997,
+          0.6652892390000034,
+          0.669095518000006,
+          0.6665219089999823
+        ],
+        "time_to_first_token_seconds_samples": [
+          0.035700679999990825,
+          0.03460871400000087,
+          0.03419640699999604,
+          0.03470751000000405,
+          0.03353990999997336
+        ],
+        "generation_including_prefill_tokens_per_second": 192.041699262437,
+        "estimated_decode_tokens_per_second": 200.97697121200915,
+        "median_time_to_first_token_seconds": 0.03460871400000087,
+        "source_preservation_and_clone_check": "passed",
+        "seeded_sampling_check": "passed"
+      },
+      "posttraining": {
+        "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+        "gpu": "NVIDIA H100 80GB HBM3",
+        "package_source_sha256": "86c1aa8886ca086e911ed8cc080c4670a0bc7499db276d1d28437dec84a116e8",
+        "config": {
+          "memory_dim": 64,
+          "memory_hidden_dim": 128,
+          "memory_depth": 2,
+          "memory_layers": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "chunk_size": 32,
+          "attention_window": 512,
+          "persistent_tokens": 4,
+          "conv_kernel": 3,
+          "max_inner_learning_rate": 0.01,
+          "gate_bias": -4.0,
+          "compile_kernels": true,
+          "prefill_chunk_size": 256,
+          "inference_backend": "sglang",
+          "attention_backend": "fa3",
+          "use_liger": true,
+          "cuda_graphs": true
+        },
+        "backbone_parameters": 1543714304,
+        "trainable_parameters": 11109900,
+        "scope": "synthetic repeated document LM; frozen backbone; throughput, not learning quality",
+        "attention": "autograd SDPA with cuDNN excluded during training; FA3 during inference only",
+        "runs": [
+          {
+            "phase": "warmup",
+            "tokens": 8192,
+            "optimizer_steps": 1,
+            "mean_loss": 0.02208474325016141,
+            "wall_seconds_including_checkpoint": 21.58733516700002,
+            "checkpoint_seconds": 2.8298774099999946,
+            "training_seconds_excluding_checkpoint": 18.757457757000026,
+            "tokens_per_second_excluding_checkpoint": 436.73295742557957,
+            "tokens_per_second_including_checkpoint": 379.4817626458541,
+            "peak_allocated_gib": 5.033149242401123,
+            "peak_reserved_gib": 5.498046875,
+            "training_config": {
+              "output_dir": "/tmp/titans-training-warmup-1794499203720388368",
+              "max_tokens": 8192,
+              "sequence_length": 2048,
+              "tokens_per_step": 8192,
+              "learning_rate": 0.0001,
+              "objective": "language_modeling",
+              "freeze_backbone": true,
+              "seed": 31,
+              "max_grad_norm": 1.0,
+              "activation_checkpointing": true
+            },
+            "finite_parameters_changed_memory_frozen_backbone_check": "passed"
+          },
+          {
+            "phase": "measured",
+            "tokens": 32768,
+            "optimizer_steps": 4,
+            "mean_loss": 0.005866328196134418,
+            "wall_seconds_including_checkpoint": 28.249853957000028,
+            "checkpoint_seconds": 2.4818077790000075,
+            "training_seconds_excluding_checkpoint": 25.76804617800002,
+            "tokens_per_second_excluding_checkpoint": 1271.6524867134215,
+            "tokens_per_second_including_checkpoint": 1159.9352000147392,
+            "peak_allocated_gib": 5.074529647827148,
+            "peak_reserved_gib": 5.537109375,
+            "training_config": {
+              "output_dir": "/tmp/titans-training-measured-1794499225318224843",
+              "max_tokens": 32768,
+              "sequence_length": 2048,
+              "tokens_per_step": 8192,
+              "learning_rate": 0.0001,
+              "objective": "language_modeling",
+              "freeze_backbone": true,
+              "seed": 31,
+              "max_grad_norm": 1.0,
+              "activation_checkpointing": true
+            },
+            "finite_parameters_changed_memory_frozen_backbone_check": "passed"
+          }
+        ]
+      }
+    },
+    "smollm2": {
+      "inference": {
+        "base_model": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        "backbone_parameters": 1711376384,
+        "package_source_sha256": "86c1aa8886ca086e911ed8cc080c4670a0bc7499db276d1d28437dec84a116e8",
+        "total_parameters": 1730360844,
+        "gpu": "NVIDIA H100 80GB HBM3",
+        "torch": "2.9.1+cu129",
+        "sglang": "0.5.7",
+        "liger_kernel": "0.6.4",
+        "config": {
+          "memory_dim": 64,
+          "memory_hidden_dim": 128,
+          "memory_depth": 2,
+          "memory_layers": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "chunk_size": 32,
+          "attention_window": 512,
+          "persistent_tokens": 4,
+          "conv_kernel": 3,
+          "max_inner_learning_rate": 0.01,
+          "gate_bias": -4.0,
+          "compile_kernels": true,
+          "prefill_chunk_size": 256,
+          "inference_backend": "sglang",
+          "attention_backend": "fa3",
+          "use_liger": true,
+          "cuda_graphs": true
+        },
+        "repeats": 5,
+        "scope": "single active stream; untrained memory adapters; throughput, not QA accuracy",
+        "load_startup_and_warmup_seconds": 45.016997702,
+        "document_tokens": 1006,
+        "document_characters": 4600,
+        "ingest_characters_per_second": 22054.040453629827,
+        "ingest_seconds_samples": [
+          0.2275531399999977,
+          0.23998114700000883,
+          0.1848652550000054,
+          0.186584957000008,
+          0.20857856000000652
+        ],
+        "ingest_tokens_per_second": 4823.122760076436,
+        "generation_128_tokens_seconds_samples": [
+          0.8395999500000073,
+          0.7205613819999996,
+          0.6799386309999988,
+          0.6941839010000024,
+          0.692382949000006
+        ],
+        "time_to_first_token_seconds_samples": [
+          0.0379682409999873,
+          0.039330719000020053,
+          0.0314813020000031,
+          0.03201825799999369,
+          0.031062050000002728
+        ],
+        "generation_including_prefill_tokens_per_second": 184.38917960443968,
+        "estimated_decode_tokens_per_second": 191.7949101445578,
+        "median_time_to_first_token_seconds": 0.03201825799999369,
+        "source_preservation_and_clone_check": "passed",
+        "seeded_sampling_check": "passed"
+      },
+      "posttraining": {
+        "base_model": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        "gpu": "NVIDIA H100 80GB HBM3",
+        "package_source_sha256": "86c1aa8886ca086e911ed8cc080c4670a0bc7499db276d1d28437dec84a116e8",
+        "config": {
+          "memory_dim": 64,
+          "memory_hidden_dim": 128,
+          "memory_depth": 2,
+          "memory_layers": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "chunk_size": 32,
+          "attention_window": 512,
+          "persistent_tokens": 4,
+          "conv_kernel": 3,
+          "max_inner_learning_rate": 0.01,
+          "gate_bias": -4.0,
+          "compile_kernels": true,
+          "prefill_chunk_size": 256,
+          "inference_backend": "sglang",
+          "attention_backend": "fa3",
+          "use_liger": true,
+          "cuda_graphs": true
+        },
+        "backbone_parameters": 1711376384,
+        "trainable_parameters": 18984460,
+        "scope": "synthetic repeated document LM; frozen backbone; throughput, not learning quality",
+        "attention": "autograd SDPA with cuDNN excluded during training; FA3 during inference only",
+        "runs": [
+          {
+            "phase": "warmup",
+            "tokens": 8192,
+            "optimizer_steps": 1,
+            "mean_loss": 0.23753981245681643,
+            "wall_seconds_including_checkpoint": 21.038531534000015,
+            "checkpoint_seconds": 3.1078639930000236,
+            "training_seconds_excluding_checkpoint": 17.93066754099999,
+            "tokens_per_second_excluding_checkpoint": 456.87088789462507,
+            "tokens_per_second_including_checkpoint": 389.38078861450225,
+            "peak_allocated_gib": 5.806212902069092,
+            "peak_reserved_gib": 5.947265625,
+            "training_config": {
+              "output_dir": "/tmp/titans-training-warmup-1794499319707217845",
+              "max_tokens": 8192,
+              "sequence_length": 2048,
+              "tokens_per_step": 8192,
+              "learning_rate": 0.0001,
+              "objective": "language_modeling",
+              "freeze_backbone": true,
+              "seed": 31,
+              "max_grad_norm": 1.0,
+              "activation_checkpointing": true
+            },
+            "finite_parameters_changed_memory_frozen_backbone_check": "passed"
+          },
+          {
+            "phase": "measured",
+            "tokens": 32768,
+            "optimizer_steps": 4,
+            "mean_loss": 6.550780140358256,
+            "wall_seconds_including_checkpoint": 25.685620529999994,
+            "checkpoint_seconds": 2.8802274739999802,
+            "training_seconds_excluding_checkpoint": 22.805393056000014,
+            "tokens_per_second_excluding_checkpoint": 1436.8531127499625,
+            "tokens_per_second_including_checkpoint": 1275.7332438874898,
+            "peak_allocated_gib": 5.878199577331543,
+            "peak_reserved_gib": 6.005859375,
+            "training_config": {
+              "output_dir": "/tmp/titans-training-measured-1794499340759878985",
+              "max_tokens": 32768,
+              "sequence_length": 2048,
+              "tokens_per_step": 8192,
+              "learning_rate": 0.0001,
+              "objective": "language_modeling",
+              "freeze_backbone": true,
+              "seed": 31,
+              "max_grad_norm": 1.0,
+              "activation_checkpointing": true
+            },
+            "finite_parameters_changed_memory_frozen_backbone_check": "passed"
+          }
+        ]
+      }
+    }
+  }
+}

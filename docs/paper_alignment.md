@@ -2,7 +2,7 @@
 
 The reference is [Titans: Learning to Memorize at Test Time, v1](https://arxiv.org/html/2501.00663v1).
 This library implements its associative neural-memory updates and attaches them
-to a pretrained Llama. The retrofit has its own retrieval schedule and residual
+to a pretrained Llama or Qwen2 model. The retrofit has its own retrieval schedule and residual
 gate. It does not reproduce the paper's complete from-scratch MAG architecture
 or its published evaluation results.
 
@@ -13,7 +13,7 @@ or its published evaluation results.
 | Chunk-start gradients, §3.2 | All gradients in a write chunk evaluated at its initial weights | Oracle evaluates each token's gradient separately at those weights |
 | Retrieval, eq. 15 | Forward pass through committed fast weights | Read-only policy and source-preservation tests |
 | Persistent inputs, §3.3 | Learned prefix embeddings with retained attention KV | Bounded-cache, checkpoint and causality tests |
-| Gated memory, §4.2 | Add a normalized, projected memory branch to Llama's attention residual | Explicit retrofit choice; stock Llama equivalence when disabled |
+| Gated memory, §4.2 | Add a normalized, projected memory branch to the host's attention residual | Explicit retrofit choice; stock Llama/Qwen2 equivalence when disabled |
 
 ## Exact recurrence and optimized chunks
 
@@ -56,7 +56,7 @@ while a chunk is incomplete. `read_only` reads the committed memory; `temporary`
 can complete the pending chunk on its disposable branch. Neither policy modifies
 the source stream. The local attention window covers recent tokens independently.
 
-The host keeps its pretrained Llama MLP, normalization and rotary embedding
+The host keeps its pretrained MLP, normalization and rotary embedding
 parameters. A sigmoid gate controls the added memory residual. Memory QKV uses
 causal depthwise convolution, SiLU, and L2-normalized queries and keys. Persistent
 prefix tokens do not write into fast memory. These choices define this retrofit;

@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 import torch
 from torch import Tensor
-from transformers import LlamaForCausalLM
 
 from titans import (
     AnswerConfig,
@@ -174,7 +173,7 @@ def test_model_chunk_boundaries_and_causality(tiny_model: TitansModel) -> None:
     assert_same(snapshot(split), snapshot(whole), exact=False)
 
 
-def test_attention_matches_stock_llama_when_window_covers_input(tiny_model: TitansModel) -> None:
+def test_attention_matches_stock_backbone_when_window_covers_input(tiny_model: TitansModel) -> None:
     """Zeroing the memory output must recover the host model's causal attention."""
     model = TitansModel(tiny_model.backbone, tiny_model.tokenizer,
                         replace(tiny_model.config, persistent_tokens=0, attention_window=64))
@@ -266,7 +265,7 @@ def test_loading_existing_backbone_entry_point(tiny_model: TitansModel, tmp_path
     tiny_model.backbone.save_pretrained(path)
     tiny_model.tokenizer.save_pretrained(path)
     loaded = TitansModel.from_pretrained(path, tiny_model.config, local_files_only=True)
-    assert isinstance(loaded.backbone, LlamaForCausalLM)
+    assert type(loaded.backbone) is type(tiny_model.backbone)
     assert loaded.ingest(Document("a", "Alice lives in Paris")).documents_seen == 1
 
 

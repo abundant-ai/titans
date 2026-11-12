@@ -1,0 +1,46 @@
+{
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "runtime": {
+    "torch": "2.9.1+cu129",
+    "sglang": "0.5.7",
+    "liger_kernel": "0.6.4"
+  },
+  "sglang_compilation": {
+    "error": "TypeError: addmm_batch_invariant() got an unexpected keyword argument 'beta'",
+    "location": "Inductor shape-padding benchmark during memory input projection",
+    "fix": "Disable shape_padding for compiled_project_tokens and compiled_combine_read; keep fullgraph JIT and deterministic inference.",
+    "regression_test": "tests/test_gpu.py::test_qwen_memory_jit_with_sglang_determinism"
+  },
+  "attention_backward": {
+    "error": "Function 'ScaledDotProductCudnnAttentionBackward0' returned nan values in its 0th output.",
+    "reproduction": "First 2048-token backward window; JIT and Liger disabled; eager anomaly detection.",
+    "fix": "Exclude cuDNN SDPA in the scoped CUDA fit context for both backbones.",
+    "reference_verification": {
+      "tokens": 8192,
+      "optimizer_steps": 1,
+      "sequence_length": 2048,
+      "mean_loss": 0.022047011756512802,
+      "elapsed_seconds_including_checkpoint": 44.722760672,
+      "all_observed_gradients_finite": true,
+      "changed_hyperparameters": false
+    }
+  },
+  "modal_runs": {
+    "sglang_failure": "https://modal.com/apps/abundant-ai/testing/ap-yHxDhfuVduEghuqM2Tg99B",
+    "cudnn_failure_eager": "https://modal.com/apps/abundant-ai/testing/ap-69Tv0i988PPjUcfzcLK2Dl",
+    "reference_success_without_cudnn": "https://modal.com/apps/abundant-ai/testing/ap-i71Kg4G3zzQ1Tl2e18OixI",
+    "jit_liger_isolation": "https://modal.com/apps/abundant-ai/testing/ap-SU1RevelNtZ64aCTVFkQpT"
+  },
+  "compiled_attention_backward": {
+    "error": "Function 'CompiledFunctionBackward' returned nan values in its 0th output.",
+    "location": "titans.kernels.compiled_attention, first 2048-token backward window",
+    "isolation": {
+      "jit_false_liger_true": "8192 tokens and one optimizer step passed with finite gradients",
+      "jit_true_liger_false": "failed",
+      "jit_true_liger_true": "failed"
+    },
+    "fix": "Keep CUDA attention outside the full-wrapper Inductor compilation; retain native fused SDPA, Liger RoPE, JIT memory kernels, FA3 inference and CUDA graph replay."
+  },
+  "final_verification": "h100_comparison_verification.json",
+  "final_training_check": "Both pretrained models completed 8192 warmup tokens and 32768 measured tokens with four measured optimizer steps, finite parameters and updated memory gates."
+}

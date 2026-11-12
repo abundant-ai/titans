@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-12",
+  "package_source_sha256": "86c1aa8886ca086e911ed8cc080c4670a0bc7499db276d1d28437dec84a116e8",
+  "device": "NVIDIA H100 80GB HBM3, GPU-0e8c5f63-5039-221a-9a01-c2e82c764974",
+  "modal_app_url": "https://modal.com/apps/abundant-ai/testing/ap-Is8oF3cudQpjNoJBca0Ic5",
+  "cpu_tests": "74 passed, 16 skipped in 15.33s",
+  "gpu_tests": "16 passed, 3 warnings in 63.42s (0:01:03)",
+  "same_titans_config_all_four_measurements": true,
+  "same_training_config_except_checkpoint_path": true,
+  "raw_results": "h100_comparison.json",
+  "limits": "Single active stream; synthetic repeated-document LM training; no held-out memory QA evaluation."
+}

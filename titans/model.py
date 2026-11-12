@@ -1,4 +1,4 @@
-"""A pretrained Llama with bounded attention and gated Titans memory branches."""
+"""A pretrained Llama or Qwen2 model with bounded attention and gated Titans memory branches."""
 
 import json
 import shutil
@@ -14,8 +14,15 @@ from safetensors.torch import load_file, save_file
 from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
-from transformers import AutoTokenizer, LlamaForCausalLM, PreTrainedTokenizerBase
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    LlamaForCausalLM,
+    PreTrainedTokenizerBase,
+    Qwen2ForCausalLM,
+)
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 from .memory import NeuralMemory
 from .state import AttentionState, StreamState
@@ -35,7 +42,7 @@ if TYPE_CHECKING:
 
 
 class TitansModel(nn.Module):
-    """Stable API for attaching, post-training and using a memory-equipped Llama.
+    """Stable API for attaching, post-training and using a memory-equipped Llama or Qwen2.
 
     This is a MAG-inspired pretrained retrofit, with the paper's memory update
     rule. It is not a reproduction of the paper's from-scratch MAG architecture.
@@ -45,14 +52,14 @@ class TitansModel(nn.Module):
 
     def __init__(
         self,
-        backbone: LlamaForCausalLM,
+        backbone: LlamaForCausalLM | Qwen2ForCausalLM,
         tokenizer: PreTrainedTokenizerBase,
         config: TitansConfig = TitansConfig(),
     ) -> None:
-        """Attach initialized memory modules to an existing pretrained Llama.
+        """Attach initialized memory modules to an existing pretrained Llama or Qwen2.
 
         Args:
-            backbone: An unquantized, single-device Hugging Face Llama model.
+            backbone: An unquantized, single-device Hugging Face Llama or Qwen2 model.
             tokenizer: Its tokenizer; vocabulary IDs must match the backbone.
             config: Memory placement, dimensions and attention window.
 
@@ -60,8 +67,8 @@ class TitansModel(nn.Module):
             ValueError: The architecture, device placement or RoPE mode is unsupported.
         """
         super().__init__()
-        if not isinstance(backbone, LlamaForCausalLM):
-            raise ValueError("Only LlamaForCausalLM backbones are currently supported")
+        if not isinstance(backbone, (LlamaForCausalLM, Qwen2ForCausalLM)):
+            raise ValueError("Only LlamaForCausalLM and Qwen2ForCausalLM backbones are supported")
         if max(config.memory_layers) >= len(backbone.model.layers):
             raise ValueError("memory_layers contains an index outside the backbone")
         if len({p.device for p in backbone.parameters()}) != 1:
@@ -139,7 +146,7 @@ class TitansModel(nn.Module):
         dtype: torch.dtype = torch.float32,
         local_files_only: bool = False,
     ) -> "TitansModel":
-        """Load a Llama checkpoint and attach new, untrained memory modules.
+        """Load a Llama or Qwen2 checkpoint and attach new, untrained memory modules.
 
         Args:
             model_name_or_path: Hugging Face model ID or local backbone directory.
@@ -151,7 +158,7 @@ class TitansModel(nn.Module):
         Returns:
             A model in evaluation mode with a frozen backbone.
         """
-        backbone = LlamaForCausalLM.from_pretrained(
+        backbone = AutoModelForCausalLM.from_pretrained(
             str(model_name_or_path), dtype=dtype, local_files_only=local_files_only,
             attn_implementation="sdpa",
         ).to(device)
@@ -193,7 +200,7 @@ class TitansModel(nn.Module):
 
     def _local_attention(
         self,
-        layer: LlamaDecoderLayer,
+        layer: LlamaDecoderLayer | Qwen2DecoderLayer,
         hidden: Tensor,
         positions: Tensor,
         rotary: tuple[Tensor, Tensor],
@@ -203,7 +210,7 @@ class TitansModel(nn.Module):
         """Run causal SDPA while retaining only persistent and recent grouped KV.
 
         Args:
-            layer: The host Llama decoder layer.
+            layer: The host Llama or Qwen2 decoder layer.
             hidden: Normalized layer input [1, tokens, hidden].
             positions: Absolute positions for this chunk, shaped [tokens].
             rotary: Cosine and sine tensors from the host's RoPE implementation.
@@ -226,7 +233,10 @@ class TitansModel(nn.Module):
                 (key_positions[None, :] < self.config.persistent_tokens)
                 | (key_positions[None, :] > positions[:, None] - self.config.attention_window)
             )
-        if self.config.compile_kernels and not use_fa3:
+        # Compiling the complete CUDA SDPA wrapper produced nonfinite Qwen
+        # gradients in PyTorch 2.9.1. Native fused attention and Liger RoPE retain
+        # their autograd rules; CPU attention and the memory core still use JIT.
+        if self.config.compile_kernels and not use_fa3 and hidden.device.type != "cuda":
             from .kernels import compiled_attention
 
             assert allowed is not None

@@ -84,7 +84,9 @@ def project_tokens(
     return query, key, value, gates, new_tail
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+# SGLang 0.5.7 deterministic addmm omits alpha/beta keyword support.
+# Inductor padding benchmarks pass those keywords; retain JIT without padding.
+@torch.compile(fullgraph=True, dynamic=True, options={"shape_padding": False})
 def compiled_project_tokens(
     hidden: Tensor, tail: Tensor, qkv_weight: Tensor, conv_weight: Tensor, conv_bias: Tensor,
     gate_weight: Tensor, gate_bias: Tensor, max_learning_rate: float,
@@ -131,7 +133,7 @@ def combine_read(
     return F.linear(read, output_weight) * F.linear(hidden, gate_weight, gate_bias).sigmoid()
 
 
-@torch.compile(fullgraph=True, dynamic=True)
+@torch.compile(fullgraph=True, dynamic=True, options={"shape_padding": False})
 def compiled_combine_read(
     reads: Tensor, hidden: Tensor, norm_weight: Tensor, norm_bias: Tensor,
     output_weight: Tensor, gate_weight: Tensor, gate_bias: Tensor, norm_eps: float,
