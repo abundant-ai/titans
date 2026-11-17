@@ -6,9 +6,10 @@
 
 Stream documents through a pretrained Llama or Qwen2 backbone. Supply the memory
 method, training data, objective and update policy. Titans is the reference method,
-implemented in [titans/titans.py](titans/titans.py).
+implemented in [titans/methods/titans.py](titans/methods/titans.py). The default MAC connection uses
+one-token segments; MAG and the previous residual connection are selectable.
 
-This is a research library. Its Titans integration is a gated pretrained retrofit,
+This is a research library. Its Titans integration is a pretrained MAC retrofit,
 not a reproduction of the paper's complete architecture or published QA results.
 Numerical tests and throughput measurements do not establish long-range recall.
 
@@ -27,14 +28,40 @@ pip install -e .
 | Boundary | Contract |
 | --- | --- |
 | Fixed | Backbone weights stay frozen; causal ingestion follows arrival order; attention state stays bounded; answers run on isolated branches. |
+| Architecture and connection | `MemoryArchitecture` builds the neural memory; `ConnectionFactory` controls its backbone wiring. Defaults: Titans memory and causal MAC. See [architecture contracts](docs/architecture.md). |
 | Memory method | `MemoryFactory` constructs a `MemoryModule` with `initial_state` and `transition`. The module owns its shared parameters and state representation. |
 | Objective | `Objective(LossContext) -> LossValue` defines the loss and its normalization. It can use logits, labels, shared parameters, memory, or combinations. |
 | Update policy | `UpdateRule(UpdateContext) -> UpdateResult` chooses targets and optimizer behavior. Built-in SGD selects `phi`, `memory`, or `both`. |
 | Data | `DataGenerator(seed) -> Iterable[TrainingEpisode]` defines documents, question timing and training targets. An ordinary iterable also works. |
 
-The contracts are in [protocols.py](titans/protocols.py), with lifecycle and
+The contracts are in [protocols.py](titans/core/protocols.py), with lifecycle and
 training semantics in [the protocol guide](docs/protocol.md). The runtime calls
 these policies; it does not accept a replacement ingestion loop.
+
+## Repository layout
+
+```text
+titans/
+  core/       # Protocols, configuration and input/output records
+  runtime/    # Frozen backbone, stream lifecycle and generic connections
+  methods/
+    titans.py # Titans architecture, transition, MAC/MAG and convenience model
+  training/   # Post-training loop, objectives and feedback update policies
+  optim/      # Compiled kernels, GPU operations and CUDA graph decoding
+  serving/    # Request registry, SGLang backend and model discovery
+tests/
+  support/    # Shared offline fixtures and independent numerical oracle
+checks/       # Manual inference-only GPU checks, outside CI
+benchmarks/   # Throughput and post-training measurements
+examples/     # Alternative memory implementations
+docs/         # Contracts, architecture and runtime guides
+```
+
+Public imports such as `from titans import ContinualModel, TitansModel` stay the
+same. Internal modules use the package paths above. Checkpoint loading accepts
+the previous built-in connection paths as well as the current ones. SGLang model
+discovery uses `titans.serving.models`; its optional dependencies are loaded only
+when the serving backend is requested.
 
 ## Instantiate a method
 
@@ -178,7 +205,7 @@ one H200. It runs no post-training, QA feedback updates or optimizer steps.
 See [the manual checks](checks/README.md) for the exact scope.
 
 The generic plugin and explicit feedback paths use the local PyTorch runtime.
-The existing SGLang/CUDA-graph adapter is specific to Titans. Use
+The existing SGLang/CUDA-graph adapter supports Titans with `residual_connection`. Use
 `inference_backend="torch"` for explicit streams and feedback. Custom methods do
 not automatically inherit the specialized serving adapter.
 

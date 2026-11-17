@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Literal, Protocol, Self
 from torch import Tensor, nn
 
 if TYPE_CHECKING:
-    from .state import StreamState
-    from .types import TrainingEpisode
+    from titans.core.types import TrainingEpisode
+    from titans.runtime.state import StreamState
 
 
 class MemoryState(Protocol):
@@ -85,7 +85,7 @@ class MemoryModule(nn.Module, ABC):
         return self.transition(hidden, state, write=write)
 
 
-class MemoryFactory(Protocol):
+class MemoryArchitecture(Protocol):
     """Construct a fresh registered module at each selected backbone layer."""
 
     def __call__(self, hidden_size: int) -> MemoryModule:
@@ -96,6 +96,98 @@ class MemoryFactory(Protocol):
 
         Returns:
             A new module instance, never shared implicitly between layers.
+        """
+        ...
+
+
+MemoryFactory = MemoryArchitecture
+
+
+@dataclass(frozen=True)
+class ConnectionContext:
+    """Read-only inputs at one selected layer; no backbone parameters are exposed."""
+
+    layer_index: int
+    hidden: Tensor
+    normalized: Tensor
+
+
+@dataclass(frozen=True)
+class ConnectionPlan:
+    """Attention input (optionally prepended context) and a real-token memory read."""
+
+    attention_input: Tensor
+    memory_output: Tensor
+
+
+class BackboneConnection(nn.Module, ABC):
+    """Registered connection parameters; mutable temporal state belongs to MemoryState."""
+
+    max_context_tokens: int = 0
+
+    @abstractmethod
+    def prepare(self, context: ConnectionContext, memory: MemoryModule,
+                state: MemoryState, *, write: bool) -> ConnectionPlan:
+        """Choose the memory inputs and the representations sent to attention.
+
+        Args:
+            context: Layer residual and normalized input, in chronological token order.
+            memory: Architecture and transition supplied by the agent.
+            state: Stream-owned memory; preserve graphs during training.
+            write: Whether active memory may be updated.
+
+        Returns:
+            Attention input may prepend up to max_context_tokens virtual tokens.
+            The memory output matches the real-token input shape; both preserve device/dtype.
+            Implementations must be causal and invariant to splitting token blocks.
+        """
+        ...
+
+    @abstractmethod
+    def combine(self, context: ConnectionContext, attention: Tensor,
+                plan: ConnectionPlan) -> Tensor:
+        """Return the complete residual stream before the fixed decoder FFN.
+
+        Args:
+            context: Original layer inputs.
+            attention: Frozen bounded attention output.
+            plan: Values retained from prepare, with differentiable graph intact.
+
+        Returns:
+            Same-shape residual stream; may use learned fusion or additional projections.
+        """
+        ...
+
+    def finish(self, context: ConnectionContext, attention: Tensor, plan: ConnectionPlan,
+               memory: MemoryModule, state: MemoryState, *, write: bool) -> Tensor:
+        """Finish the connection, optionally writing memory from attention outputs.
+
+        Args:
+            context: Original layer inputs.
+            attention: Attention outputs corresponding to real tokens only.
+            plan: Intermediate reads from prepare.
+            memory: Registered memory architecture.
+            state: Continuing algorithm state.
+            write: Whether attention-driven writes are permitted.
+
+        Returns:
+            The residual stream before the fixed FFN. The default delegates to combine.
+        """
+        return self.combine(context, attention, plan)
+
+
+class ConnectionFactory(Protocol):
+    """Instantiate independent connection modules with layer-specific architecture."""
+
+    def __call__(self, layer_index: int, hidden_size: int) -> BackboneConnection:
+        """Create the connection for one configured memory layer.
+
+        Args:
+            layer_index: Backbone layer receiving the memory connection.
+            hidden_size: Width of its residual stream.
+
+        Returns:
+            A fresh module; its parameters join phi and its weights are checkpointed.
         """
         ...
 

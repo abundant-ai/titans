@@ -11,7 +11,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from titans.protocols import MemoryModule, MemoryState
+from titans.core.protocols import MemoryModule, MemoryState
 
 
 @dataclass

@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 from torch import Tensor
 
-from .protocols import MemoryState
+from titans.core.protocols import MemoryState
 
 
 @dataclass

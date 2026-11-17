@@ -14,13 +14,13 @@ episode creates a new stream. `ingest` is marked final in the type contract.
 
 Each selected layer calls its method's `transition(hidden, state, write=...)`.
 The runtime retains ownership of attention, position accounting, token budgets,
-branching and the frozen backbone. The current integration adds the returned
-memory contribution to the attention residual. Arbitrary backbone architectures
-or injection mechanisms are not part of this protocol version.
+branching and the frozen backbone. The connection protocol controls attention inputs and output fusion, including
+attention-driven memory writes. See [architecture and connection contracts](architecture.md)
+for the MAC default, available hooks, and segmentation limits.
 
 ## Memory method
 
-`MemoryFactory(hidden_size) -> MemoryModule` constructs a new independent module
+`MemoryArchitecture(hidden_size) -> MemoryModule` (also exported as `MemoryFactory`) constructs a new independent module
 per selected layer. Factory closures may capture arbitrary algorithm settings.
 The runtime moves registered parameters to the backbone's device and dtype.
 
@@ -48,7 +48,7 @@ returns named floating-point W tensors; replace accepts shape-compatible updates
 to those names. Momentum, replay buffers or other history belong to that same
 state, not global variables. `StreamState.memory` exposes it by layer.
 
-All Titans method code is in `titans/titans.py`: settings, state, associative MLP,
+All Titans method code is in `titans/methods/titans.py`: settings, state, associative MLP,
 update equations, projections, and the `titans(config)` factory. `kernels.py`
 contains compiler wrappers and shared backbone execution kernels.
 

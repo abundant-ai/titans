@@ -1,5 +1,10 @@
 # GPU runtime
 
+The new default is causal MAC on the local PyTorch runtime. The SGLang/CUDA-graph
+path described below requires explicit `connection_factory=residual_connection`.
+Historical benchmark scripts select that connection to preserve their workload.
+See [architecture contracts](architecture.md) for details.
+
 This guide describes the existing Titans-specific accelerator path. Generic
 methods and explicit QA feedback use the local PyTorch runtime. Historical H100
 measurements predate the protocol refactor and have not been re-run for it.

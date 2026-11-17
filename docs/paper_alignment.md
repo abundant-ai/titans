@@ -1,7 +1,14 @@
+# Current connection default
+
+Fresh models use causal MAC with one-token segments. MAG and the historical
+residual retrofit remain available. See [architecture contracts](architecture.md)
+for the precise operation order, segmentation limits and compatibility behavior.
+The historical retrofit discussion below describes the residual connection.
+
 # Paper alignment
 
 The reference is [Titans: Learning to Memorize at Test Time, v1](https://arxiv.org/html/2501.00663v1).
-The method in [`titans/titans.py`](../titans/titans.py) implements its associative neural-memory updates and attaches them
+The method in [`titans/methods/titans.py`](../titans/methods/titans.py) implements its associative neural-memory updates and attaches them
 to a pretrained Llama or Qwen2 model. The retrofit has its own retrieval schedule and residual
 gate. It does not reproduce the paper's complete from-scratch MAG architecture
 or its published evaluation results.

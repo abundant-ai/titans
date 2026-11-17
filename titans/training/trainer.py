@@ -10,13 +10,13 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from .learning import cross_entropy, feedback_tokens, validate_loss
-from .protocols import DataGenerator, LossContext, Objective, UpdateRule
-from .state import StreamState
-from .types import TrainingConfig, TrainingEpisode, TrainingResult
+from titans.core.protocols import DataGenerator, LossContext, Objective, UpdateRule
+from titans.core.types import TrainingConfig, TrainingEpisode, TrainingResult
+from titans.runtime.state import StreamState
+from titans.training.learning import cross_entropy, feedback_tokens, validate_loss
 
 if TYPE_CHECKING:
-    from .model import ContinualModel
+    from titans.runtime.model import ContinualModel
 
 
 class _TrainingRun:
@@ -128,7 +128,7 @@ class _TrainingRun:
                         validate_loss(result)
                         loss, weight = result.value, result.weight
                     elif use_liger:
-                        from .gpu_ops import liger_loss
+                        from titans.optim.gpu_ops import liger_loss
 
                         loss = liger_loss(self.model.backbone.lm_head.weight,
                                           predictions.reshape(-1, predictions.shape[-1]), targets)
@@ -230,6 +230,7 @@ def fit_model(
     model._revision += 1
     model.backbone.requires_grad_(False)
     model.memories.requires_grad_(True)
+    model.connections.requires_grad_(True)
     model.persistent.requires_grad_(True)
     model.train()
     run = _TrainingRun(model, config, loss)

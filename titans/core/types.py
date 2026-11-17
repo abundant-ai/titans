@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from .state import StreamState
+    from titans.runtime.state import StreamState
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ import pytest
 import torch
 from torch import Tensor
 
+from tests.support.state import assert_same, snapshot
 from titans import (
     AnswerConfig,
     Document,
@@ -17,52 +18,7 @@ from titans import (
     TrainingEpisode,
     TrainingQuestion,
 )
-
-
-def snapshot(state: StreamState) -> dict[str, Tensor]:
-    """Copy all mutable tensors for source-preservation and isolation assertions.
-
-    Args:
-        state: A live stream returned by the model.
-
-    Returns:
-        Named tensor copies, including every pending update and cache.
-    """
-    tensors: dict[str, Tensor] = {}
-    for index, memory in state._memory.items():
-        for depth, weight in enumerate(memory.weights):
-            tensors[f"{index}.w.{depth}"] = weight.detach().clone()
-        for depth, momentum in enumerate(memory.momentum):
-            tensors[f"{index}.s.{depth}"] = momentum.detach().clone()
-        tensors[f"{index}.pending"] = memory.pending.detach().clone()
-        tensors[f"{index}.conv"] = memory.conv_tail.detach().clone()
-    for index, cache in state._attention.items():
-        tensors[f"{index}.k"] = cache.keys.detach().clone()
-        tensors[f"{index}.v"] = cache.values.detach().clone()
-        tensors[f"{index}.positions"] = cache.positions.clone()
-    if state._next_logits is not None:
-        tensors["logits"] = state._next_logits.detach().clone()
-    if state._next_hidden is not None:
-        tensors["hidden"] = state._next_hidden.detach().clone()
-    tensors["metadata"] = torch.tensor([state._position, state._tokens, state._documents,
-                                        state._revision, state._valid])
-    return tensors
-
-
-def assert_same(actual: dict[str, Tensor], expected: dict[str, Tensor], *, exact: bool = True) -> None:
-    """Compare a complete stream snapshot, including its structure.
-
-    Args:
-        actual: Observed tensor mapping.
-        expected: Reference tensor mapping.
-        exact: Whether to require bitwise equality instead of normal tolerances.
-    """
-    assert actual.keys() == expected.keys()
-    for name in actual:
-        if exact:
-            torch.testing.assert_close(actual[name], expected[name], rtol=0, atol=0)
-        else:
-            torch.testing.assert_close(actual[name], expected[name])
+from titans.runtime.connections import residual_connection
 
 
 @pytest.mark.parametrize("policy", ["read_only", "temporary"])
@@ -176,7 +132,8 @@ def test_model_chunk_boundaries_and_causality(tiny_model: TitansModel) -> None:
 def test_attention_matches_stock_backbone_when_window_covers_input(tiny_model: TitansModel) -> None:
     """Zeroing the memory output must recover the host model's causal attention."""
     model = TitansModel(tiny_model.backbone, tiny_model.tokenizer,
-                        replace(tiny_model.config, persistent_tokens=0, attention_window=64))
+                        replace(tiny_model.config, persistent_tokens=0, attention_window=64),
+                        connection_factory=residual_connection)
     with torch.no_grad():
         for memory in model.memories.values():
             memory.output.weight.zero_()

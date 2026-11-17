@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
 from examples.linear_memory import LinearMemory
-from tests.test_memory import case
+from tests.support.memory import case
 from titans import (
     AnswerConfig,
     ContinualModel,
@@ -20,11 +20,12 @@ from titans import (
     TitansModel,
     titans,
 )
-from titans.cuda_graphs import GraphDecoder
-from titans.gpu_ops import flash_attention3, liger_norm, liger_rotary
-from titans.kernels import compiled_chunk_update
-from titans.state import StreamState
-from titans.titans import chunk_update
+from titans.methods.titans import chunk_update
+from titans.optim.cuda_graphs import GraphDecoder
+from titans.optim.gpu_ops import flash_attention3, liger_norm, liger_rotary
+from titans.optim.kernels import compiled_chunk_update
+from titans.runtime.connections import residual_connection
+from titans.runtime.state import StreamState
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires a CUDA GPU")
 
@@ -206,7 +207,8 @@ def test_cuda_graphs_preserve_streams_and_chunk_commits(tiny_model: TitansModel,
     )).to(device="cuda", dtype=torch.bfloat16)
     config = replace(tiny_model.config, compile_kernels=True, use_liger=True,
                      persistent_tokens=prefix, inference_backend="torch", attention_backend="fa3")
-    model = TitansModel(backbone, tiny_model.tokenizer, config)
+    model = TitansModel(backbone, tiny_model.tokenizer, config,
+                        connection_factory=residual_connection)
     decoder = GraphDecoder(model)
     state = model._new_state()
     reference = state._copy(detach=True)
@@ -248,7 +250,7 @@ def test_qwen_memory_jit_with_sglang_determinism() -> None:
     )
 
     from titans import TitansConfig
-    from titans.titans import NeuralMemory
+    from titans.methods.titans import NeuralMemory
 
     torch.compiler.reset()
     torch.manual_seed(38)

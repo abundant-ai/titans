@@ -1,6 +1,6 @@
 # Validation record
 
-The refactored library passes 97 CPU tests. These cover the equation oracle,
+The architecture extension passes 111 CPU tests. GPU tests remain skipped. These cover the equation oracle,
 outer gradients, finite differences, compiled/eager agreement, training, custom
 methods/objectives/update rules, state ownership and checkpoint restoration.
 
@@ -14,7 +14,8 @@ H100, H200 and L4 calls queued without allocating a container. The queued jobs
 were stopped. [`modal_attempts.json`](modal_attempts.json) records the observed
 status; zero GPU tests and zero GPU training steps ran for this refactor.
 
-[`optimization_preservation.json`](optimization_preservation.json) compares the
+The historical [`optimization_preservation.json`](optimization_preservation.json),
+recorded at commit `1cf5ad1` before the architecture extension, compares the
 refactor with commit `2260f95668a4c3d40fd6050292a1d2f74d8f5a5c`. All 36 checked
 optimization-related function bodies are unchanged, including memory equations,
 compiler wrappers, attention execution, CUDA graph handling and SGLang serving.

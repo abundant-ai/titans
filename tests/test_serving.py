@@ -2,10 +2,9 @@
 
 import torch
 
+from tests.support.state import assert_same, snapshot
 from titans import Document, TitansModel
-from titans.serving import RequestControl, StateRegistry
-
-from .test_model import assert_same, snapshot
+from titans.serving.registry import RequestControl, StateRegistry
 
 
 def test_serving_branches_preserve_fast_weights_and_pending_updates(tiny_model: TitansModel) -> None:

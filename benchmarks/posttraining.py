@@ -12,6 +12,7 @@ import torch
 
 from benchmarks.h100 import BASE_MODEL, source_digest
 from titans import Document, TitansConfig, TitansModel, TrainingConfig, TrainingEpisode
+from titans.runtime.connections import residual_connection
 
 
 class TimedTitansModel(TitansModel):
@@ -51,7 +52,8 @@ def main() -> None:
                           chunk_size=32, prefill_chunk_size=256, attention_window=512,
                           persistent_tokens=4, inference_backend="sglang", attention_backend="fa3",
                           compile_kernels=True, use_liger=True)
-    model = TimedTitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16)
+    model = TimedTitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16,
+                                              connection_factory=residual_connection)
     assert isinstance(model, TimedTitansModel)
     # Identical source text; exact token budgets compensate for tokenizer differences.
     episode = TrainingEpisode("archive", (Document("batch", (

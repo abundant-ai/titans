@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING
 import torch
 from torch import Tensor
 
-from .state import StreamState
-from .titans import MemoryState
+from titans.methods.titans import MemoryState
+from titans.runtime.state import StreamState
 
 if TYPE_CHECKING:
-    from .model import ContinualModel
+    from titans.runtime.model import ContinualModel
 
 
 class GraphDecoder:

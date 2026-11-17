@@ -18,6 +18,7 @@ from titans import (
     TrainingEpisode,
     TrainingQuestion,
 )
+from titans.runtime.connections import residual_connection
 
 
 def main() -> None:
@@ -33,7 +34,8 @@ def main() -> None:
     started = time.perf_counter()
     config = TitansConfig(memory_dim=16, memory_hidden_dim=32, memory_layers=(0, 1),
                           attention_window=128, persistent_tokens=0, chunk_size=16)
-    model = TitansModel.from_pretrained(args.backbone, config, local_files_only=True)
+    model = TitansModel.from_pretrained(args.backbone, config, local_files_only=True,
+                                         connection_factory=residual_connection)
     tokens = model.tokenizer.encode("Alice lives in Paris. Later she moves to Rome. " * 3)
     with torch.no_grad():
         for memory in model.memories.values():
@@ -43,7 +45,8 @@ def main() -> None:
     max_error = float((stock - attached).abs().max().item())
     torch.testing.assert_close(attached, stock, rtol=1e-3, atol=2e-4)
     # Reinitialize nonzero adapters before testing real post-training.
-    model = TitansModel(model.backbone, model.tokenizer, replace(config, persistent_tokens=2))
+    model = TitansModel(model.backbone, model.tokenizer, replace(config, persistent_tokens=2),
+                        connection_factory=residual_connection)
     memory_before = model.memories["0"].gates.weight.detach().clone()
     backbone_sample = model.backbone.model.layers[0].self_attn.q_proj.weight.detach().clone()
     episodes = [TrainingEpisode("cities", (

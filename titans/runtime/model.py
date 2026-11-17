@@ -24,9 +24,16 @@ from transformers import (
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
-from .protocols import DataGenerator, MemoryFactory, Objective, UpdateRule
-from .state import AttentionState, StreamState
-from .types import (
+from titans.core.protocols import (
+    ConnectionContext,
+    ConnectionFactory,
+    DataGenerator,
+    MemoryArchitecture,
+    MemoryFactory,
+    Objective,
+    UpdateRule,
+)
+from titans.core.types import (
     Answer,
     AnswerConfig,
     Document,
@@ -36,10 +43,12 @@ from .types import (
     TrainingEpisode,
     TrainingResult,
 )
+from titans.runtime.connections import ResidualConnection, residual_connection
+from titans.runtime.state import AttentionState, StreamState
 
 if TYPE_CHECKING:
-    from .sglang_backend import SGLangBackend
-    from .types import LearningResult
+    from titans.core.types import LearningResult
+    from titans.serving.backend import SGLangBackend
 
 
 class ContinualModel(nn.Module):
@@ -58,7 +67,9 @@ class ContinualModel(nn.Module):
         tokenizer: PreTrainedTokenizerBase,
         config: RuntimeConfig = RuntimeConfig(),
         *,
-        memory_factory: MemoryFactory,
+        memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None,
     ) -> None:
         """Attach initialized memory modules to an existing pretrained Llama or Qwen2.
 
@@ -66,6 +77,8 @@ class ContinualModel(nn.Module):
             backbone: An unquantized, single-device Hugging Face Llama or Qwen2 model.
             tokenizer: Its tokenizer; vocabulary IDs must match the backbone.
             config: Memory placement and bounded backbone execution settings.
+            memory_architecture: Architecture factory; defaults to Titans neural memory.
+            connection_factory: Per-layer connection factory; defaults to causal MAC for ContinualModel.
             memory_factory: Constructs a fresh method module for each selected layer.
 
         Raises:
@@ -88,8 +101,31 @@ class ContinualModel(nn.Module):
         self.tokenizer = tokenizer
         self.config = config
         parameter = backbone.model.embed_tokens.weight
+        if memory_factory is not None and memory_architecture is not None:
+            raise ValueError("Supply memory_architecture or legacy memory_factory, not both")
+        if memory_factory is None and memory_architecture is None:
+            from titans.methods.titans import TitansArchitecture, TitansConfig
+
+            memory_architecture = TitansArchitecture(TitansConfig(
+                chunk_size=1, compile_kernels=config.compile_kernels))
+        architecture = memory_architecture or memory_factory
+        assert architecture is not None
+        if connection_factory is None:
+            from titans.methods.titans import titans_mac_connection
+
+            connection_factory = titans_mac_connection
+        self.connections = nn.ModuleDict({
+            str(index): connection_factory(index, backbone.config.hidden_size)
+            for index in config.memory_layers
+        }).to(device=parameter.device, dtype=parameter.dtype)
+        if len({id(module) for module in self.connections.values()}) != len(config.memory_layers):
+            raise ValueError("connection_factory must create independent modules per layer")
+        if any(c.max_context_tokens < 0 or c.max_context_tokens + 1 > config.attention_window
+               for c in self.connections.values()):
+            raise ValueError("Connection context must fit inside attention_window")
+        self._contextual_connections = any(c.max_context_tokens for c in self.connections.values())
         self.memories = nn.ModuleDict({
-            str(index): memory_factory(backbone.config.hidden_size)
+            str(index): architecture(backbone.config.hidden_size)
             for index in config.memory_layers
         }).to(device=parameter.device, dtype=parameter.dtype)
         if len({id(module) for module in self.memories.values()}) != len(config.memory_layers):
@@ -133,7 +169,7 @@ class ContinualModel(nn.Module):
             The owned local inference engine.
         """
         if self._sglang_backend is None:
-            from .sglang_backend import SGLangBackend
+            from titans.serving.backend import SGLangBackend
 
             self._sglang_backend = SGLangBackend(self)
         return self._sglang_backend
@@ -153,7 +189,9 @@ class ContinualModel(nn.Module):
         model_name_or_path: str | Path,
         config: RuntimeConfig = RuntimeConfig(),
         *,
-        memory_factory: MemoryFactory,
+        memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None,
         device: str = "cpu",
         dtype: torch.dtype = torch.float32,
         local_files_only: bool = False,
@@ -163,6 +201,8 @@ class ContinualModel(nn.Module):
         Args:
             model_name_or_path: Hugging Face model ID or local backbone directory.
             config: Bounded runtime and placement settings.
+            memory_architecture: Architecture factory; defaults to Titans neural memory.
+            connection_factory: Per-layer connection factory; defaults to causal MAC for ContinualModel.
             memory_factory: Constructs the new method modules.
             device: One device, such as ``cpu`` or ``cuda:0``.
             dtype: Backbone and learned-adapter storage dtype.
@@ -178,7 +218,8 @@ class ContinualModel(nn.Module):
         tokenizer = AutoTokenizer.from_pretrained(
             str(model_name_or_path), local_files_only=local_files_only,
         )
-        return cls(backbone, tokenizer, config, memory_factory=memory_factory)
+        return cls(backbone, tokenizer, config, memory_factory=memory_factory,
+                   memory_architecture=memory_architecture, connection_factory=connection_factory)
 
     def _validate_state(self, state: StreamState) -> None:
         """Reject foreign, stale, failed or differently placed streams.
@@ -251,7 +292,7 @@ class ContinualModel(nn.Module):
         # gradients in PyTorch 2.9.1. Native fused attention and Liger RoPE retain
         # their autograd rules; CPU attention and the memory core still use JIT.
         if self.config.compile_kernels and not use_fa3 and hidden.device.type != "cuda":
-            from .kernels import compiled_attention
+            from titans.optim.kernels import compiled_attention
 
             assert allowed is not None
             empty_shape = (hidden.shape[0], attention.k_proj.out_features // attention.head_dim,
@@ -271,7 +312,7 @@ class ContinualModel(nn.Module):
             key = attention.k_proj(hidden).view(shape).transpose(1, 2)
             value = attention.v_proj(hidden).view(shape).transpose(1, 2)
             if hidden.device.type == "cuda" and self.config.use_liger:
-                from .gpu_ops import liger_rotary
+                from titans.optim.gpu_ops import liger_rotary
 
                 query, key = liger_rotary(query, key, *rotary)
             else:
@@ -281,7 +322,7 @@ class ContinualModel(nn.Module):
                 value = torch.cat((cache.values, value), -2)
             groups = query.shape[1] // key.shape[1]
             if use_fa3:
-                from .gpu_ops import flash_attention3
+                from titans.optim.gpu_ops import flash_attention3
 
                 output = flash_attention3(
                     query, key, value, prefix_count=min(self.config.persistent_tokens, next_position),
@@ -321,6 +362,12 @@ class ContinualModel(nn.Module):
         Returns:
             Logits [1, tokens, vocabulary] for next-token prediction.
         """
+        prefix_pass = state._position == 0 and embeddings.shape[1] == self.config.persistent_tokens
+        if self._contextual_connections and not prefix_pass and embeddings.shape[1] > 1:
+            outputs = [self._forward_embeddings(embeddings[:, i:i + 1], state, write=write,
+                                               last_only=last_only, return_hidden=return_hidden)
+                       for i in range(embeddings.shape[1])]
+            return outputs[-1] if last_only else torch.cat(outputs, dim=1)
         if positions is None:
             positions = torch.arange(
                 state._position, state._position + embeddings.shape[1], device=embeddings.device,
@@ -330,27 +377,68 @@ class ContinualModel(nn.Module):
         use_liger = self.config.use_liger and hidden.device.type == "cuda"
         for index, layer in enumerate(self.backbone.model.layers):
             if use_liger:
-                from .gpu_ops import liger_norm
+                from titans.optim.gpu_ops import liger_norm
 
                 normalized = liger_norm(hidden, layer.input_layernorm.weight,
                                         layer.input_layernorm.variance_epsilon)
             elif self.config.compile_kernels:
-                from .kernels import compiled_rms_norm
+                from titans.optim.kernels import compiled_rms_norm
 
                 normalized = compiled_rms_norm(hidden, layer.input_layernorm.weight,
                                                layer.input_layernorm.variance_epsilon)
             else:
                 normalized = layer.input_layernorm(hidden)
+            context = ConnectionContext(index, hidden, normalized)
+            connection = self.connections[str(index)] if str(index) in self.memories else None
+            if prefix_pass and connection is not None and connection.max_context_tokens:
+                connection = None
+            plan = None
+            if connection is not None:
+                plan = connection.prepare(context, self.memories[str(index)],
+                                          state._memory[index], write=write)
+                if (plan.memory_output.shape != hidden.shape
+                        or plan.memory_output.device != hidden.device
+                        or plan.memory_output.dtype != hidden.dtype):
+                    raise ValueError("Memory read must preserve shape, device and dtype")
+                extra = plan.attention_input.shape[1] - hidden.shape[1]
+                if (not 0 <= extra <= connection.max_context_tokens
+                        or plan.attention_input.shape[0] != hidden.shape[0]
+                        or plan.attention_input.shape[2:] != hidden.shape[2:]
+                        or plan.attention_input.device != hidden.device
+                        or plan.attention_input.dtype != hidden.dtype):
+                    raise ValueError("Invalid connection attention input")
+            else:
+                extra = 0
+            local_positions, local_rotary = positions, rotary
+            old_cache = state._attention.get(index)
+            next_position = state._position + embeddings.shape[1]
+            if connection is not None and connection.max_context_tokens:
+                # Virtual memory tokens occupy segment-local RoPE positions. Old
+                # segment KV is discarded; only persistent prefix KV survives.
+                prefix = self.config.persistent_tokens
+                count = embeddings.shape[1] + extra
+                local_positions = torch.arange(prefix, prefix + count, device=hidden.device)
+                local_rotary = self.backbone.model.rotary_emb(plan.attention_input,
+                                                              local_positions[None, :])
+                next_position = prefix + count
             attended, cache = self._local_attention(
-                layer, normalized, positions, rotary, state._attention.get(index),
-                state._position + embeddings.shape[1],
+                layer, plan.attention_input if plan is not None else normalized,
+                local_positions, local_rotary, old_cache, next_position,
             )
+            if connection is not None and connection.max_context_tokens:
+                keep = cache.positions < self.config.persistent_tokens
+                cache = AttentionState(cache.keys[:, :, keep], cache.values[:, :, keep],
+                                       cache.positions[keep])
+                attended = attended[:, extra:]
             state._attention[index] = cache
-            if str(index) in self.memories:
-                attended = attended + self.memories[str(index)](
-                    normalized, state._memory[index], write=write,
-                )
-            hidden = hidden + attended
+            if connection is not None and plan is not None:
+                hidden = connection.finish(context, attended, plan, self.memories[str(index)],
+                                           state._memory[index], write=write)
+                if (hidden.shape != context.hidden.shape or hidden.device != context.hidden.device
+                        or hidden.dtype != context.hidden.dtype):
+                    raise ValueError("Connection output must preserve shape, device and dtype")
+            else:
+                hidden = hidden + attended
             if use_liger:
                 normalized = liger_norm(hidden, layer.post_attention_layernorm.weight,
                                         layer.post_attention_layernorm.variance_epsilon)
@@ -361,11 +449,11 @@ class ContinualModel(nn.Module):
                 normalized = layer.post_attention_layernorm(hidden)
             if (use_liger or self.config.compile_kernels) and self.backbone.config.hidden_act == "silu":
                 if use_liger:
-                    from .gpu_ops import liger_mlp
+                    from titans.optim.gpu_ops import liger_mlp
 
                     mlp_forward = liger_mlp
                 else:
-                    from .kernels import compiled_llama_mlp
+                    from titans.optim.kernels import compiled_llama_mlp
 
                     mlp_forward = compiled_llama_mlp
 
@@ -573,7 +661,7 @@ class ContinualModel(nn.Module):
         truncated backpropagation through memory writes; each episode resets
         state and each training question runs on a disposable branch.
         """
-        from .training import fit_model
+        from titans.training.trainer import fit_model
 
         return fit_model(self, episodes, config, loss=loss, update=update)
 
@@ -590,7 +678,8 @@ class ContinualModel(nn.Module):
 
     def shared_parameters(self) -> tuple[nn.Parameter, ...]:
         """Return phi, excluding every frozen backbone parameter."""
-        return tuple(self.memories.parameters()) + (self.persistent,)
+        return (tuple(self.memories.parameters()) + tuple(self.connections.parameters())
+                + (self.persistent,))
 
     def learn(
         self, question: Question, target_answer: str, state: StreamState,
@@ -610,7 +699,7 @@ class ContinualModel(nn.Module):
         Returns:
             Loss and token accounting. Updating phi invalidates other live streams.
         """
-        from .learning import learn
+        from titans.training.learning import learn
 
         return learn(self, question, target_answer, state, loss=loss, update=update,
                      retain_history=retain_history)
@@ -637,10 +726,14 @@ class ContinualModel(nn.Module):
             self.tokenizer.save_pretrained(temporary / "backbone")
             adapter = {f"memories.{key}": value.detach().cpu().contiguous()
                        for key, value in self.memories.state_dict().items()}
+            adapter.update({f"connections.{key}": value.detach().cpu().contiguous()
+                            for key, value in self.connections.state_dict().items()})
             adapter["persistent"] = self.persistent.detach().cpu().contiguous()
             save_file(adapter, temporary / "memory.safetensors")
             (temporary / "titans.json").write_text(json.dumps({
-                "format_version": 2, "revision": self._revision, "config": asdict(self.config),
+                "format_version": 3,
+                "connection_types": {key: type(module).__module__ + "." + type(module).__qualname__
+                                     for key, module in self.connections.items()}, "revision": self._revision, "config": asdict(self.config),
             }, indent=2) + "\n")
             temporary.rename(destination)
         except Exception:
@@ -650,7 +743,9 @@ class ContinualModel(nn.Module):
 
     @classmethod
     def load_pretrained(
-        cls, path: str | Path, *, memory_factory: MemoryFactory,
+        cls, path: str | Path, *, memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None,
         config: RuntimeConfig | None = None, device: str = "cpu",
         dtype: torch.dtype = torch.float32,
     ) -> Self:
@@ -658,6 +753,8 @@ class ContinualModel(nn.Module):
 
         Args:
             path: Complete checkpoint directory.
+            memory_architecture: Architecture factory; defaults to Titans neural memory.
+            connection_factory: Per-layer connection factory; defaults to causal MAC for ContinualModel.
             memory_factory: Explicit trusted method constructor; code is not loaded from metadata.
             config: Optional method-specific settings; otherwise restore runtime fields.
             device: Single destination device.
@@ -669,7 +766,7 @@ class ContinualModel(nn.Module):
         """
         source = Path(path)
         metadata = json.loads((source / "titans.json").read_text())
-        if metadata["format_version"] not in (1, 2):
+        if metadata["format_version"] not in (1, 2, 3):
             raise ValueError("Unsupported Titans checkpoint format")
         settings = metadata["config"]
         settings["memory_layers"] = tuple(settings["memory_layers"])
@@ -677,13 +774,50 @@ class ContinualModel(nn.Module):
         config = config or RuntimeConfig(**{
             key: value for key, value in settings.items() if key in runtime_fields
         })
+        from titans.methods.titans import (
+            TitansMACConnection,
+            TitansMAGConnection,
+            titans_mac_connection,
+            titans_mag_connection,
+        )
+
+        # Older format-3 checkpoints recorded the original flat package paths.
+        legacy_connections = {
+            "titans.connections.ResidualConnection":
+                ResidualConnection.__module__ + ".ResidualConnection",
+            "titans.titans.TitansMACConnection":
+                TitansMACConnection.__module__ + ".TitansMACConnection",
+            "titans.titans.TitansMAGConnection":
+                TitansMAGConnection.__module__ + ".TitansMAGConnection",
+        }
+        kinds = {key: legacy_connections.get(kind, kind)
+                 for key, kind in metadata.get("connection_types", {}).items()}
+        if connection_factory is None:
+            names = set(kinds.values())
+            if not names or names == {ResidualConnection.__module__ + ".ResidualConnection"}:
+                connection_factory = residual_connection
+            elif names == {TitansMACConnection.__module__ + ".TitansMACConnection"}:
+                connection_factory = titans_mac_connection
+            elif names == {TitansMAGConnection.__module__ + ".TitansMAGConnection"}:
+                connection_factory = titans_mag_connection
+            else:
+                raise ValueError("Custom checkpoint requires an explicit connection_factory")
         model = cls.from_pretrained(source / "backbone", config,
-                                    memory_factory=memory_factory, device=device, dtype=dtype,
+                                    memory_factory=memory_factory, memory_architecture=memory_architecture,
+                                    connection_factory=connection_factory, device=device, dtype=dtype,
                                     local_files_only=True)
         adapter = load_file(source / "memory.safetensors")
         model.memories.load_state_dict({
             key.removeprefix("memories."): value
             for key, value in adapter.items() if key.startswith("memories.")
+        }, strict=True)
+        actual_kinds = {key: type(module).__module__ + "." + type(module).__qualname__
+                        for key, module in model.connections.items()}
+        if kinds and actual_kinds != kinds:
+            raise ValueError("Supplied connection architecture differs from the checkpoint")
+        model.connections.load_state_dict({
+            key.removeprefix("connections."): value
+            for key, value in adapter.items() if key.startswith("connections.")
         }, strict=True)
         with torch.no_grad():
             model.persistent.copy_(adapter["persistent"])

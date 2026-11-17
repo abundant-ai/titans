@@ -17,10 +17,19 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .model import ContinualModel
-from .protocols import MemoryFactory, MemoryModule
-from .protocols import MemoryState as StateProtocol
-from .types import RuntimeConfig
+from titans.core.protocols import (
+    BackboneConnection,
+    ConnectionContext,
+    ConnectionFactory,
+    ConnectionPlan,
+    MemoryArchitecture,
+    MemoryFactory,
+    MemoryModule,
+)
+from titans.core.protocols import MemoryState as StateProtocol
+from titans.core.types import RuntimeConfig
+from titans.runtime.connections import ResidualConnection, residual_connection
+from titans.runtime.model import ContinualModel
 
 if TYPE_CHECKING:
     from transformers import LlamaForCausalLM, PreTrainedTokenizerBase, Qwen2ForCausalLM
@@ -39,7 +48,7 @@ class TitansConfig(RuntimeConfig):
     memory_dim: int = 128
     memory_hidden_dim: int = 256
     memory_depth: int = 2
-    chunk_size: int = 32
+    chunk_size: int = 1
     conv_kernel: int = 3
     max_inner_learning_rate: float = 0.01
     gate_bias: float = -4.0
@@ -295,7 +304,7 @@ class NeuralMemory(MemoryModule):
         """
         if not isinstance(state, MemoryState):
             raise TypeError("Titans requires its own MemoryState")
-        from .kernels import (
+        from titans.optim.kernels import (
             combine_read,
             compiled_chunk_update,
             compiled_combine_read,
@@ -398,6 +407,131 @@ def combine_read(
 
 
 
+class TitansMAGConnection(ResidualConnection):
+    """MAG topology: normalized parallel branches combined by a nonlinear gate.
+
+    Implements the topology of Titans section 4.2, equations 26-28. RMS
+    normalization and SiLU-product gating are explicit implementation choices;
+    the paper permits nonlinear gating and does not provide complete code here.
+    The host's frozen decoder, residual and FFN remain a pretrained retrofit.
+    """
+
+    def __init__(self, hidden_size: int) -> None:
+        """Create trainable vector scales for the two branches.
+
+        Args:
+            hidden_size: Width of the backbone residual stream.
+        """
+        super().__init__()
+        self.attention_scale = nn.Parameter(torch.ones(hidden_size))
+        self.memory_scale = nn.Parameter(torch.ones(hidden_size))
+
+    def combine(self, context: ConnectionContext, attention: Tensor,
+                plan: ConnectionPlan) -> Tensor:
+        """Gate normalized attention with normalized memory before adding the residual.
+
+        Args:
+            context: Original backbone residual.
+            attention: Sliding-window attention output.
+            plan: Read from the parallel memory branch.
+
+        Returns:
+            Residual plus the elementwise gated branch product.
+        """
+        shape = (attention.shape[-1],)
+        short = F.rms_norm(attention, shape, self.attention_scale, eps=1e-6)
+        long = F.rms_norm(plan.memory_output, shape, self.memory_scale, eps=1e-6)
+        return context.hidden + short * F.silu(long)
+
+
+def titans_mag_connection(layer_index: int, hidden_size: int) -> BackboneConnection:
+    """Construct an independent MAG connection at a selected layer.
+
+    Args:
+        layer_index: Backbone layer index; available for layer-dependent policies.
+        hidden_size: Residual stream width.
+
+    Returns:
+        A new trainable MAG connection.
+    """
+    return TitansMAGConnection(hidden_size)
+
+
+class TitansMACConnection(ResidualConnection):
+    """Causal MAC with one real token per segment and one retrieved context token.
+
+    Implements the ordering in equations 21-25: read old memory, prepend its
+    representation to attention, write attention output, then read updated memory.
+    The one-token segment makes arbitrary stream splits equivalent without looking
+    ahead. This is a pretrained retrofit, not the paper's full training recipe.
+    """
+
+    max_context_tokens = 1
+
+    def prepare(self, context: ConnectionContext, memory: MemoryModule,
+                state: StateProtocol, *, write: bool) -> ConnectionPlan:
+        """Retrieve on a disposable branch; the live memory is written after attention.
+
+        Args:
+            context: One normalized real token and its original residual.
+            memory: Memory architecture providing the retrieval/update operation.
+            state: Live memory before this segment.
+            write: Unused here; finish controls the attention-driven write.
+
+        Returns:
+            Retrieved context followed by the real token as the attention input.
+        """
+        retrieved = memory(context.normalized, state.copy(), write=False)
+        return ConnectionPlan(torch.cat((retrieved, context.normalized), dim=1), retrieved)
+
+    def finish(self, context: ConnectionContext, attention: Tensor, plan: ConnectionPlan,
+               memory: MemoryModule, state: StateProtocol, *, write: bool) -> Tensor:
+        """Write from attention, then gate it with a read from the resulting memory.
+
+        Args:
+            context: Original real-token residual.
+            attention: Real-token output after attending to persistent/retrieved context.
+            plan: Read-before-write retrieval produced by prepare.
+            memory: Selected neural memory.
+            state: Live state receiving the attention-driven update.
+            write: False for isolated read-only answers and released-feedback loss branches.
+
+        Returns:
+            Residual plus attention multiplied by a SiLU memory gate.
+        """
+        if write:
+            memory(attention, state, write=True)
+        retrieved = memory(attention, state.copy(), write=False)
+        return self.combine(context, attention, ConnectionPlan(plan.attention_input, retrieved))
+
+    def combine(self, context: ConnectionContext, attention: Tensor,
+                plan: ConnectionPlan) -> Tensor:
+        """Gate attention with the post-write retrieval; subclasses may replace fusion.
+
+        Args:
+            context: Original real-token residual.
+            attention: Core attention output.
+            plan: Post-write memory read provided by finish.
+
+        Returns:
+            The complete residual stream before the decoder FFN.
+        """
+        return context.hidden + attention * F.silu(plan.memory_output)
+
+
+def titans_mac_connection(layer_index: int, hidden_size: int) -> BackboneConnection:
+    """Build the default memory-as-context connection.
+
+    Args:
+        layer_index: Selected backbone placement.
+        hidden_size: Residual width, supplied for custom connection factories.
+
+    Returns:
+        Independent causal MAC connection with a one-token segment.
+    """
+    return TitansMACConnection()
+
+
 def titans(config: TitansConfig = TitansConfig()) -> MemoryFactory:
     """Instantiate the Titans method as a factory accepted by ContinualModel.
 
@@ -410,6 +544,24 @@ def titans(config: TitansConfig = TitansConfig()) -> MemoryFactory:
     return partial(NeuralMemory, config=config)
 
 
+@dataclass(frozen=True)
+class TitansArchitecture:
+    """Default deep MLP memory architecture, with Titans projections and recurrence."""
+
+    config: TitansConfig = TitansConfig()
+
+    def __call__(self, hidden_size: int) -> NeuralMemory:
+        """Build independent neural memory with configurable width, depth and chunk size.
+
+        Args:
+            hidden_size: Backbone residual width supplied by the runtime.
+
+        Returns:
+            A fresh registered memory module with the Titans transition.
+        """
+        return NeuralMemory(hidden_size, self.config)
+
+
 class TitansModel(ContinualModel):
     """Convenience constructor for the Titans method on the fixed runtime."""
 
@@ -419,6 +571,8 @@ class TitansModel(ContinualModel):
         self, backbone: "LlamaForCausalLM | Qwen2ForCausalLM",
         tokenizer: "PreTrainedTokenizerBase", config: TitansConfig = TitansConfig(),
         *, memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None,
     ) -> None:
         """Attach Titans or an explicitly supplied compatible method factory.
 
@@ -426,17 +580,25 @@ class TitansModel(ContinualModel):
             backbone: Frozen single-device Llama or Qwen2 backbone.
             tokenizer: Tokenizer matching the backbone vocabulary.
             config: Runtime and Titans algorithm settings.
+            memory_architecture: Optional replacement for the complete memory network.
+            connection_factory: Optional connection; defaults to causal MAC.
             memory_factory: Optional constructor used by generic checkpoint restoration.
         """
+        if memory_factory is not None and memory_architecture is not None:
+            raise ValueError("Supply one memory architecture factory")
+        chosen_connection = connection_factory or titans_mac_connection
         super().__init__(backbone, tokenizer, config,
-                         memory_factory=memory_factory or titans(config))
-        if memory_factory is not None:
-            self.supports_sglang = all(isinstance(m, NeuralMemory) for m in self.memories.values())
+                         memory_architecture=memory_architecture or memory_factory or TitansArchitecture(config),
+                         connection_factory=chosen_connection)
+        self.supports_sglang = (chosen_connection is residual_connection
+                               and all(type(m) is NeuralMemory for m in self.memories.values()))
 
     @classmethod
     def from_pretrained(
         cls, model_name_or_path: str | Path, config: TitansConfig = TitansConfig(),
-        *, memory_factory: MemoryFactory | None = None, device: str = "cpu",
+        *, memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None, device: str = "cpu",
         dtype: torch.dtype = torch.float32, local_files_only: bool = False,
     ) -> Self:
         """Load a pretrained backbone and attach untrained Titans modules.
@@ -444,6 +606,8 @@ class TitansModel(ContinualModel):
         Args:
             model_name_or_path: Hugging Face ID or local checkpoint.
             config: Runtime and method settings.
+            memory_architecture: Optional replacement for the complete memory network.
+            connection_factory: Optional connection; defaults to causal MAC.
             memory_factory: Optional explicit constructor for checkpoint restoration.
             device: Single target device.
             dtype: Backbone and adapter parameter dtype.
@@ -453,17 +617,20 @@ class TitansModel(ContinualModel):
             A frozen-backbone model with fresh stream ownership.
         """
         return super().from_pretrained(
-            model_name_or_path, config, memory_factory=memory_factory or titans(config),
+            model_name_or_path, config, memory_factory=memory_factory,
+            memory_architecture=memory_architecture, connection_factory=connection_factory,
             device=device, dtype=dtype, local_files_only=local_files_only,
         )
 
     @classmethod
     def load_pretrained(
         cls, path: str | Path, *, device: str = "cpu", dtype: torch.dtype = torch.float32,
+        connection_factory: ConnectionFactory | None = None,
     ) -> Self:
         """Restore a Titans checkpoint, including the previous version's format.
 
         Args:
+            connection_factory: Explicit factory required for custom saved connections.
             path: Directory written by save_pretrained.
             device: Single target device.
             dtype: Backbone and adapter parameter dtype.
@@ -475,4 +642,5 @@ class TitansModel(ContinualModel):
         settings["memory_layers"] = tuple(settings["memory_layers"])
         config = TitansConfig(**settings)
         return super().load_pretrained(path, memory_factory=titans(config), config=config,
+                                       connection_factory=connection_factory,
                                        device=device, dtype=dtype)

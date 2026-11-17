@@ -3,10 +3,10 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from .state import StreamState
+from titans.runtime.state import StreamState
 
 if TYPE_CHECKING:
-    from .model import ContinualModel
+    from titans.runtime.model import ContinualModel
 
 
 @dataclass(frozen=True)

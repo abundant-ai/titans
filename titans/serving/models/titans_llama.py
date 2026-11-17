@@ -17,9 +17,10 @@ from sglang.srt.sampling.custom_logit_processor import CustomLogitProcessor
 from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaConfig, Qwen2Config
 
-from titans.cuda_graphs import GraphDecoder
-from titans.serving import RequestControl, StateRegistry
-from titans.titans import TitansConfig, TitansModel
+from titans.methods.titans import TitansConfig, TitansModel
+from titans.optim.cuda_graphs import GraphDecoder
+from titans.runtime.connections import residual_connection
+from titans.serving.registry import RequestControl, StateRegistry
 
 
 class TitansMetadataProcessor(CustomLogitProcessor):
@@ -65,6 +66,7 @@ class TitansForCausalLM(nn.Module):
         tokenizer = AutoTokenizer.from_pretrained(config._name_or_path, local_files_only=True)
         self.titans = TitansModel(
             AutoModelForCausalLM.from_config(config), tokenizer, TitansConfig(**settings),
+            connection_factory=residual_connection,
         )
         self.registry = StateRegistry(self.titans)
         self.decoder = GraphDecoder(self.titans)

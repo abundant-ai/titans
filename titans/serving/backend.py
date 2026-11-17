@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from .serving import RequestControl
-from .state import StreamState
-from .types import Answer, AnswerConfig, Document, Question
+from titans.core.types import Answer, AnswerConfig, Document, Question
+from titans.runtime.state import StreamState
+from titans.serving.registry import RequestControl
 
 if TYPE_CHECKING:
-    from .model import ContinualModel
+    from titans.runtime.model import ContinualModel
 
 
 class SGLangBackend:
@@ -31,7 +31,7 @@ class SGLangBackend:
         import sglang as sgl
         from sglang.srt.models.registry import ModelRegistry
 
-        from .sglang_models.titans_llama import TitansForCausalLM, TitansMetadataProcessor
+        from titans.serving.models.titans_llama import TitansForCausalLM, TitansMetadataProcessor
 
         self.model = model
         dtype = model.backbone.model.embed_tokens.weight.dtype
@@ -51,7 +51,7 @@ class SGLangBackend:
             config["titans_adapter_path"] = str(checkpoint / "memory.safetensors")
             config_path.write_text(json.dumps(config) + "\n")
             previous = os.environ.get("SGLANG_EXTERNAL_MODEL_PACKAGE")
-            os.environ["SGLANG_EXTERNAL_MODEL_PACKAGE"] = "titans.sglang_models"
+            os.environ["SGLANG_EXTERNAL_MODEL_PACKAGE"] = "titans.serving.models"
             try:
                 self.engine = sgl.Engine(
                     model_path=str(checkpoint / "backbone"), dtype=str(dtype).removeprefix("torch."),

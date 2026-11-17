@@ -13,8 +13,9 @@ from pathlib import Path
 import torch
 
 from titans import AnswerConfig, Document, Question, TitansConfig, TitansModel
-from titans.cuda_graphs import GraphDecoder
-from titans.serving import RequestControl
+from titans.optim.cuda_graphs import GraphDecoder
+from titans.runtime.connections import residual_connection
+from titans.serving.registry import RequestControl
 
 BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
@@ -91,7 +92,8 @@ def main() -> None:
                           persistent_tokens=4, inference_backend="sglang", attention_backend="fa3",
                           compile_kernels=True, use_liger=True)
     started = time.perf_counter()
-    model = TitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16)
+    model = TitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16,
+                                              connection_factory=residual_connection)
     backbone_parameters = sum(p.numel() for p in model.backbone.parameters())
     assert backbone_parameters < 2_000_000_000
     report: dict[str, object] = {

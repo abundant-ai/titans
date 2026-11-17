@@ -11,9 +11,9 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
-from tests.reference import reference_chunk
-from titans.kernels import compiled_chunk_update
-from titans.titans import chunk_update
+from tests.support.reference import reference_chunk
+from titans.methods.titans import chunk_update
+from titans.optim.kernels import compiled_chunk_update
 
 
 def synchronize(device: torch.device) -> None:

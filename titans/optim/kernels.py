@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from .titans import chunk_update, combine_read, mlp, project_tokens
+from titans.methods.titans import chunk_update, combine_read, mlp, project_tokens
 
 
 @torch.compile(fullgraph=True, dynamic=False)

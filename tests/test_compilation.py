@@ -5,6 +5,9 @@ from pathlib import Path
 
 import torch
 
+from tests.support.memory import case
+from tests.support.reference import reference_chunk
+from tests.support.state import assert_same, snapshot
 from titans import (
     AnswerConfig,
     Document,
@@ -14,11 +17,8 @@ from titans import (
     TrainingEpisode,
     TrainingQuestion,
 )
-from titans.kernels import compiled_chunk_update
-
-from .reference import reference_chunk
-from .test_memory import case
-from .test_model import assert_same, snapshot
+from titans.optim.kernels import compiled_chunk_update
+from titans.runtime.connections import residual_connection
 
 
 def test_compiled_update_and_outer_gradients() -> None:
@@ -42,7 +42,7 @@ def test_compiled_model_and_training_match_eager(tiny_model: TitansModel, tmp_pa
     # Each architecture gets an independent compiler session, as in serving workers.
     torch.compiler.reset()
     compiled = TitansModel(tiny_model.backbone, tiny_model.tokenizer,
-                           replace(tiny_model.config, compile_kernels=True))
+                           replace(tiny_model.config, compile_kernels=True), connection_factory=residual_connection)
     compiled.load_state_dict(tiny_model.state_dict())
     tokens = [7, 10, 11, 12, 13, 8, 10, 11, 12, 14, 17]
     with torch.no_grad():

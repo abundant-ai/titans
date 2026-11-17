@@ -10,12 +10,19 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from .protocols import LossContext, LossValue, Objective, UpdateContext, UpdateResult, UpdateRule
-from .state import StreamState
-from .types import LearningResult, Question
+from titans.core.protocols import (
+    LossContext,
+    LossValue,
+    Objective,
+    UpdateContext,
+    UpdateResult,
+    UpdateRule,
+)
+from titans.core.types import LearningResult, Question
+from titans.runtime.state import StreamState
 
 if TYPE_CHECKING:
-    from .model import ContinualModel
+    from titans.runtime.model import ContinualModel
 
 
 def cross_entropy(context: LossContext) -> LossValue:

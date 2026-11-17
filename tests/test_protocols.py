@@ -22,6 +22,7 @@ from titans import (
     UpdateContext,
     UpdateResult,
     cross_entropy,
+    residual_connection,
 )
 
 
@@ -38,7 +39,7 @@ def linear_model(tiny_model: TitansModel) -> ContinualModel:
     return ContinualModel(tiny_model.backbone, tiny_model.tokenizer,
                           RuntimeConfig(attention_window=8, persistent_tokens=0,
                                         compile_kernels=False, prefill_chunk_size=3),
-                          memory_factory=LinearMemory)
+                          memory_factory=LinearMemory, connection_factory=residual_connection)
 
 
 def test_alternative_transition_order_and_continuity(linear_model: ContinualModel) -> None:
@@ -168,7 +169,7 @@ def test_generic_checkpoint_requires_explicit_factory(
 ) -> None:
     """Restored custom methods reproduce logits without importing code from metadata."""
     path = linear_model.save_pretrained(tmp_path / "custom")
-    restored = ContinualModel.load_pretrained(path, memory_factory=LinearMemory)
+    restored = ContinualModel.load_pretrained(path, memory_factory=LinearMemory, connection_factory=residual_connection)
     with torch.no_grad():
         expected = linear_model._forward_tokens([7, 10, 13], linear_model.start_stream())
         actual = restored._forward_tokens([7, 10, 13], restored.start_stream())
