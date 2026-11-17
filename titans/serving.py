@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 from .state import StreamState
 
 if TYPE_CHECKING:
-    from .model import TitansModel
+    from .model import ContinualModel
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ class RequestControl:
 class StateRegistry:
     """Worker-owned memory states; SGLang's token-prefix cache is not used for them."""
 
-    def __init__(self, model: "TitansModel") -> None:
+    def __init__(self, model: "ContinualModel") -> None:
         """Create an empty registry for one worker model.
 
         Args:

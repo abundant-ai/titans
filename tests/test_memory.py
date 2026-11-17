@@ -4,8 +4,7 @@ import pytest
 import torch
 from torch import Tensor
 
-from titans.memory import NeuralMemory, chunk_update, mlp
-from titans.types import TitansConfig
+from titans.titans import NeuralMemory, TitansConfig, chunk_update, mlp
 
 from .reference import reference_chunk
 

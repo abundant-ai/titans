@@ -1,0 +1,39 @@
+{
+  "status": "skipped_by_user_after_scheduling_wait",
+  "date_utc": "2026-11-17",
+  "gpu_tests_executed": 0,
+  "gpu_training_executed": false,
+  "reason": "H100, H200 and L4 requests remained pending without a GPU container; user requested skipping unavailable GPU tests.",
+  "reproduce_command": "uvx modal run --env testing checks/modal_inference.py --output validation/gpu_inference.json",
+  "last_run_url": "https://modal.com/apps/abundant-ai/testing/ap-QdXEb4R4IeyzRWfIRV4I4V",
+  "last_call_before_stop": [
+    {
+      "function_call_id": "fc-01M7NVXBRQXJVT5YWYMXB11MY9",
+      "service_method_name": null,
+      "enqueued_at": "2026-11-17T23:01:44.855731Z",
+      "started_at": null,
+      "container_id": null,
+      "startup_time_seconds": null,
+      "execution_time_seconds": null,
+      "status": "pending"
+    }
+  ],
+  "last_app_lifecycle": {
+    "state": "stopped",
+    "created_at": "2026-11-17 23:01:28+00:00",
+    "created_by": "eric-34341",
+    "deployed_at": null,
+    "deployed_by": null,
+    "version": null,
+    "stopped_at": "2026-11-17 23:06:50+00:00",
+    "stopped_by": "eric-34341"
+  },
+  "manual_check_scope": "Inference only; no fit, learn, backward or optimizer steps. Eight portable checks; seventeen with --hopper.",
+  "ci": "No GPU workflow added; checks/ is outside default pytest discovery.",
+  "local_cpu_result": "97 passed in 15.65s",
+  "other_attempts_stopped_before_execution": [
+    "https://modal.com/apps/abundant-ai/testing/ap-0Kc2dnOrmtm951ga7JXv1o",
+    "https://modal.com/apps/abundant-ai/testing/ap-fWoHw4EGNHOMmvfx0glFcc",
+    "https://modal.com/apps/abundant-ai/testing/ap-3ZSB22r3y3qXLie2mG2eOr"
+  ]
+}

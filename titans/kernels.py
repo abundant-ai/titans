@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from .memory import chunk_update, mlp
+from .titans import chunk_update, combine_read, mlp, project_tokens
 
 
 @torch.compile(fullgraph=True, dynamic=False)
@@ -48,40 +48,6 @@ def compiled_read(weights: tuple[Tensor, ...], queries: Tensor) -> Tensor:
     return mlp(weights, queries)
 
 
-def project_tokens(
-    hidden: Tensor, tail: Tensor, qkv_weight: Tensor, conv_weight: Tensor, conv_bias: Tensor,
-    gate_weight: Tensor, gate_bias: Tensor, max_learning_rate: float,
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Project QKV, apply causal convolution and normalize keys, queries and gates.
-
-    Args:
-        hidden: Host activations [batch, tokens, hidden].
-        tail: Previous projected convolution context.
-        qkv_weight: Combined input projection matrix.
-        conv_weight: Depthwise convolution filters.
-        conv_bias: Depthwise convolution biases.
-        gate_weight: Learned forget, momentum and learning-rate projection.
-        gate_bias: Bias for the three update gates.
-        max_learning_rate: Upper bound for the inner update rate.
-
-    Returns:
-        Query, key, value, three gates, and the independent new convolution tail.
-        Update operands use float32, or float64 when hidden uses float64.
-    """
-    projected = F.linear(hidden, qkv_weight)
-    context = torch.cat((tail, projected.transpose(1, 2)), -1)
-    mixed = F.silu(F.conv1d(context, conv_weight, conv_bias,
-                           groups=conv_weight.shape[0]).transpose(1, 2))
-    query, key, value = mixed.chunk(3, -1)
-    dtype = torch.float64 if hidden.dtype == torch.float64 else torch.float32
-    query = F.normalize(query.to(dtype), dim=-1, eps=1e-6)
-    key = F.normalize(key.to(dtype), dim=-1, eps=1e-6)
-    value = value.to(dtype)
-    gates = F.linear(hidden, gate_weight, gate_bias).to(dtype).sigmoid()
-    gates = gates * gates.new_tensor([1.0, 1.0, max_learning_rate])
-    tail_length = conv_weight.shape[-1] - 1
-    new_tail = context[..., -tail_length:].clone() if tail_length else context[..., :0].clone()
-    return query, key, value, gates, new_tail
 
 
 # SGLang 0.5.7 deterministic addmm omits alpha/beta keyword support.
@@ -110,27 +76,6 @@ def compiled_project_tokens(
                           gate_weight, gate_bias, max_learning_rate)
 
 
-def combine_read(
-    reads: Tensor, hidden: Tensor, norm_weight: Tensor, norm_bias: Tensor,
-    output_weight: Tensor, gate_weight: Tensor, gate_bias: Tensor, norm_eps: float,
-) -> Tensor:
-    """Normalize and project a memory read, then apply the learned residual gate.
-
-    Args:
-        reads: Retrieved memory values [batch, tokens, memory_dimension].
-        hidden: Original host activations, which determine the mix gate.
-        norm_weight: Read normalization scales.
-        norm_bias: Read normalization biases.
-        output_weight: Projection into the host residual width.
-        gate_weight: Mix-gate projection matrix.
-        gate_bias: Mix-gate biases.
-        norm_eps: Layer-normalization stabilizer.
-
-    Returns:
-        Gated memory contribution in the host's dtype and shape.
-    """
-    read = F.layer_norm(reads.to(hidden.dtype), (reads.shape[-1],), norm_weight, norm_bias, norm_eps)
-    return F.linear(read, output_weight) * F.linear(hidden, gate_weight, gate_bias).sigmoid()
 
 
 @torch.compile(fullgraph=True, dynamic=True, options={"shape_padding": False})

@@ -1,10 +1,12 @@
 """Owned stream state; callers pass it between the four public operations."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from torch import Tensor
 
-from .memory import MemoryState
+from .protocols import MemoryState
 
 
 @dataclass
@@ -52,6 +54,11 @@ class StreamState:
     _remote_id: str | None = None
 
     @property
+    def memory(self) -> Mapping[int, MemoryState]:
+        """Expose algorithm-owned state by layer without allowing layer reassignment."""
+        return MappingProxyType(self._memory)
+
+    @property
     def tokens_processed(self) -> int:
         """Return the number of non-prefix tokens committed to this branch."""
         return self._tokens
@@ -71,7 +78,7 @@ class StreamState:
             An independent state, including pending writes and cached logits.
         """
         if self._remote_id is not None:
-            raise ValueError("Remote streams must be cloned through TitansModel.clone_state")
+            raise ValueError("Remote streams must be cloned through the owning model")
         logits = self._next_logits
         if logits is not None:
             logits = logits.detach().clone() if detach else logits.clone()

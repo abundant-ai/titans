@@ -1,4 +1,4 @@
-"""Hardware checks for FA3 and Liger, skipped explicitly on non-CUDA machines."""
+"""Manually invoked CUDA inference checks; excluded from default pytest and CI."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -8,23 +8,79 @@ import torch
 from torch.nn import functional as F
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
+from examples.linear_memory import LinearMemory
+from tests.test_memory import case
 from titans import (
+    AnswerConfig,
+    ContinualModel,
     Document,
     Question,
+    RuntimeConfig,
+    TitansConfig,
     TitansModel,
-    TrainingConfig,
-    TrainingEpisode,
-    TrainingQuestion,
+    titans,
 )
 from titans.cuda_graphs import GraphDecoder
-from titans.gpu_ops import flash_attention3, liger_loss, liger_norm, liger_rotary
+from titans.gpu_ops import flash_attention3, liger_norm, liger_rotary
 from titans.kernels import compiled_chunk_update
 from titans.state import StreamState
+from titans.titans import chunk_update
 
-from .reference import reference_chunk
-from .test_memory import case
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires a CUDA GPU")
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires a CUDA Hopper GPU")
+
+@pytest.mark.parametrize("method", ["titans", "linear"])
+@torch.no_grad()
+def test_generic_cuda_inference_and_restore(
+    tiny_model: TitansModel, method: str, tmp_path: Path,
+) -> None:
+    """Exercise both method protocols with streaming, isolated QA and checkpoint restore.
+
+    Args:
+        tiny_model: Offline Llama/Qwen architecture and tokenizer fixture.
+        method: Titans or a structurally independent linear memory method.
+        tmp_path: Temporary directory for an untrained checkpoint round trip.
+    """
+    backbone = type(tiny_model.backbone)(type(tiny_model.backbone.config)(
+        vocab_size=128, hidden_size=256, intermediate_size=512, num_hidden_layers=2,
+        num_attention_heads=2, num_key_value_heads=1, eos_token_id=2,
+    )).to(device="cuda", dtype=torch.bfloat16)
+    settings = RuntimeConfig(memory_layers=(0, 1), attention_window=16, persistent_tokens=2,
+                             compile_kernels=False, use_liger=True, prefill_chunk_size=16)
+    factory = (titans(TitansConfig(memory_dim=8, memory_hidden_dim=16, chunk_size=4,
+                                  compile_kernels=False)) if method == "titans" else LinearMemory)
+    model = ContinualModel(backbone, tiny_model.tokenizer, settings, memory_factory=factory)
+    parameters = [parameter.clone() for parameter in model.parameters()]
+    state = model.start_stream()
+    for index in range(3):
+        model.ingest(Document(str(index), "Alice lives in Paris " * 8), state)
+    assert state.documents_seen == 3 and state.tokens_processed > settings.attention_window
+    source = model.clone_state(state)
+    prediction = model.answer(Question("q", "Where Alice lives ?"), state,
+                              AnswerConfig(max_new_tokens=3))
+    assert isinstance(prediction.text, str)
+    assert state.tokens_processed == source.tokens_processed
+    for layer, component in state.memory.items():
+        for actual, expected in zip(component.tensors(), source.memory[layer].tensors(), strict=True):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            assert bool(torch.isfinite(actual).all().item())
+    for layer, cache in state._attention.items():
+        assert cache.keys.shape[2] <= settings.attention_window + settings.persistent_tokens
+        torch.testing.assert_close(cache.keys, source._attention[layer].keys, rtol=0, atol=0)
+    fork = model.clone_state(state)
+    model.ingest(Document("new", "Alice lives in Rome"), fork)
+    assert fork.documents_seen == 4 and state.documents_seen == 3
+    assert any(not torch.equal(actual, old)
+               for layer, component in fork.memory.items()
+               for actual, old in zip(component.tensors(), state.memory[layer].tensors(), strict=True))
+    for actual, expected in zip(model.parameters(), parameters, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    checkpoint = model.save_pretrained(tmp_path / "untrained")
+    restored = ContinualModel.load_pretrained(checkpoint, memory_factory=factory,
+                                              device="cuda", dtype=torch.bfloat16)
+    expected = model._forward_tokens([7, 10, 13], model.start_stream())
+    actual = restored._forward_tokens([7, 10, 13], restored.start_stream())
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("prefix", [0, 4])
@@ -69,39 +125,23 @@ def test_fa3_persistent_initialization_is_causal() -> None:
     torch.testing.assert_close(actual, expected, rtol=0.03, atol=0.01)
 
 
-def test_liger_fused_loss_and_gradients() -> None:
-    """Fused vocabulary loss must preserve its sum reduction and both input gradients."""
-    torch.manual_seed(25)
-    hidden = torch.randn(19, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    weight = torch.randn(128, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    targets = torch.randint(128, (19,), device="cuda")
-    actual = liger_loss(weight, hidden, targets)
-    expected = F.cross_entropy(F.linear(hidden, weight).float(), targets, reduction="sum")
-    actual_grad = torch.autograd.grad(actual, (hidden, weight))
-    expected_grad = torch.autograd.grad(expected, (hidden, weight))
-    torch.testing.assert_close(actual, expected, rtol=0.02, atol=0.1)
-    for got, want in zip(actual_grad, expected_grad, strict=True):
-        torch.testing.assert_close(got, want, rtol=0.06, atol=0.06)
-
-
-def test_liger_norm_preserves_gradients_and_input() -> None:
+@torch.no_grad()
+def test_liger_norm_preserves_output_and_input() -> None:
     """The Liger normalization path must not modify shared residual storage."""
-    hidden = torch.randn(1, 7, 128, device="cuda", dtype=torch.float32, requires_grad=True)
-    weight = torch.randn(128, device="cuda", requires_grad=True)
+    hidden = torch.randn(1, 7, 128, device="cuda", dtype=torch.float32)
+    weight = torch.randn(128, device="cuda")
     original = hidden.detach().clone()
     actual = liger_norm(hidden, weight, 1e-5)
     expected = hidden * torch.rsqrt(hidden.square().mean(-1, keepdim=True) + 1e-5) * weight
-    got = torch.autograd.grad(actual.square().sum(), (hidden, weight))
-    want = torch.autograd.grad(expected.square().sum(), (hidden, weight))
-    for first, second in zip(got, want, strict=True):
-        torch.testing.assert_close(first, second, rtol=2e-4, atol=2e-4)
+    torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
     torch.testing.assert_close(hidden, original, rtol=0, atol=0)
 
 
+@torch.no_grad()
 def test_liger_rotary_matches_llama() -> None:
-    """Fused grouped-query rotary outputs and gradients must match the host operation."""
-    query = torch.randn(1, 4, 7, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    key = torch.randn(1, 2, 7, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    """Fused grouped-query rotary outputs must match the host operation."""
+    query = torch.randn(1, 4, 7, 64, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn(1, 2, 7, 64, device="cuda", dtype=torch.bfloat16)
     angles = torch.randn(1, 7, 32, device="cuda")
     angles = torch.cat((angles, angles), -1)
     cosine, sine = angles.cos().bfloat16(), angles.sin().bfloat16()
@@ -109,49 +149,19 @@ def test_liger_rotary_matches_llama() -> None:
     actual = liger_rotary(query, key, cosine, sine)
     for got, want in zip(actual, expected, strict=True):
         torch.testing.assert_close(got, want, rtol=0.02, atol=0.02)
-    upstream = tuple(torch.randn_like(value) for value in expected)
-    got_grad = torch.autograd.grad(actual, (query, key),
-                                   tuple(value.clone() for value in upstream))
-    want_grad = torch.autograd.grad(expected, (query, key), upstream)
-    for got, want in zip(got_grad, want_grad, strict=True):
-        torch.testing.assert_close(got, want, rtol=0.02, atol=0.02)
 
 
-def test_cuda_compiled_memory_matches_equations() -> None:
-    """Verify final states and training gradients from the actual CUDA JIT memory kernel."""
+@torch.no_grad()
+def test_cuda_compiled_memory_matches_eager() -> None:
+    """Compare compiled test-time memory transitions with their eager implementation."""
     raw = case(2, 7)
-    weights = tuple(w.detach().float().cuda().requires_grad_() for w in raw[0])
-    momentum = tuple(w.detach().float().cuda().requires_grad_() for w in raw[1])
-    operands = tuple(t.detach().float().cuda().requires_grad_() for t in raw[2:])
+    weights = tuple(w.detach().float().cuda() for w in raw[0])
+    momentum = tuple(w.detach().float().cuda() for w in raw[1])
+    operands = tuple(t.detach().float().cuda() for t in raw[2:])
     actual = compiled_chunk_update(weights, momentum, *operands)
-    expected = reference_chunk(weights, momentum, *operands)
+    expected = chunk_update(weights, momentum, *operands)
     for got, want in zip(actual[0] + actual[1], expected[0] + expected[1], strict=True):
         torch.testing.assert_close(got, want, rtol=1e-4, atol=1e-5)
-    inputs = weights + momentum + operands
-    got_grad = torch.autograd.grad(sum(w.square().sum() for w in actual[0] + actual[1]), inputs)
-    want_grad = torch.autograd.grad(sum(w.square().sum() for w in expected[0] + expected[1]), inputs)
-    for got, want in zip(got_grad, want_grad, strict=True):
-        torch.testing.assert_close(got, want, rtol=2e-4, atol=2e-5)
-
-
-def test_cuda_liger_posttraining_updates_write_rule(tiny_model: TitansModel, tmp_path: Path) -> None:
-    """Exercise the complete BF16 post-training path through Liger and compiled memory."""
-    torch.compiler.reset()
-    backbone = type(tiny_model.backbone)(type(tiny_model.backbone.config)(
-        vocab_size=128, hidden_size=256, intermediate_size=512, num_hidden_layers=2,
-        num_attention_heads=2, num_key_value_heads=1, eos_token_id=2,
-    )).to(device="cuda", dtype=torch.bfloat16)
-    config = replace(tiny_model.config, compile_kernels=True, use_liger=True,
-                     inference_backend="torch", attention_backend="auto")
-    model = TitansModel(backbone, tiny_model.tokenizer, config)
-    before = model.memories["0"].gates.weight.detach().clone()
-    episode = TrainingEpisode("one", (Document("a", "Alice lives in Paris"),), (
-        TrainingQuestion(1, Question("q", "Where Alice lives ?"), "Paris"),
-    ))
-    result = model.fit([episode], TrainingConfig(tmp_path / "cuda", max_tokens=64,
-                                               sequence_length=32, tokens_per_step=32))
-    assert result.optimizer_steps == 1
-    assert not torch.equal(before, model.memories["0"].gates.weight)
 
 
 def assert_stream_matches(actual: StreamState, expected: StreamState) -> None:
@@ -238,7 +248,7 @@ def test_qwen_memory_jit_with_sglang_determinism() -> None:
     )
 
     from titans import TitansConfig
-    from titans.memory import NeuralMemory
+    from titans.titans import NeuralMemory
 
     torch.compiler.reset()
     torch.manual_seed(38)

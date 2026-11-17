@@ -1,0 +1,207 @@
+{
+  "base_commit": "2260f95668a4c3d40fd6050292a1d2f74d8f5a5c",
+  "audit": "AST function-body comparison; annotations and file locations may change",
+  "optimized_functions": [
+    {
+      "original": "titans/memory.py:mlp",
+      "current": "titans/titans.py:mlp",
+      "body_identical": true
+    },
+    {
+      "original": "titans/memory.py:suffix_products",
+      "current": "titans/titans.py:suffix_products",
+      "body_identical": true
+    },
+    {
+      "original": "titans/memory.py:affine_scan",
+      "current": "titans/titans.py:affine_scan",
+      "body_identical": true
+    },
+    {
+      "original": "titans/memory.py:chunk_update",
+      "current": "titans/titans.py:chunk_update",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:project_tokens",
+      "current": "titans/titans.py:project_tokens",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:combine_read",
+      "current": "titans/titans.py:combine_read",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_chunk_update",
+      "current": "titans/kernels.py:compiled_chunk_update",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_read",
+      "current": "titans/kernels.py:compiled_read",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_project_tokens",
+      "current": "titans/kernels.py:compiled_project_tokens",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_combine_read",
+      "current": "titans/kernels.py:compiled_combine_read",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_llama_mlp",
+      "current": "titans/kernels.py:compiled_llama_mlp",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_rms_norm",
+      "current": "titans/kernels.py:compiled_rms_norm",
+      "body_identical": true
+    },
+    {
+      "original": "titans/kernels.py:compiled_attention",
+      "current": "titans/kernels.py:compiled_attention",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:__init__",
+      "current": "titans/cuda_graphs.py:__init__",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:deactivate",
+      "current": "titans/cuda_graphs.py:deactivate",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_eligible",
+      "current": "titans/cuda_graphs.py:_eligible",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_initialize",
+      "current": "titans/cuda_graphs.py:_initialize",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_load",
+      "current": "titans/cuda_graphs.py:_load",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_view",
+      "current": "titans/cuda_graphs.py:_view",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_step",
+      "current": "titans/cuda_graphs.py:_step",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_buffers",
+      "current": "titans/cuda_graphs.py:_buffers",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:_capture",
+      "current": "titans/cuda_graphs.py:_capture",
+      "body_identical": true
+    },
+    {
+      "original": "titans/cuda_graphs.py:forward",
+      "current": "titans/cuda_graphs.py:forward",
+      "body_identical": true
+    },
+    {
+      "original": "titans/sglang_backend.py:__init__",
+      "current": "titans/sglang_backend.py:__init__",
+      "body_identical": true
+    },
+    {
+      "original": "titans/sglang_backend.py:_request",
+      "current": "titans/sglang_backend.py:_request",
+      "body_identical": true
+    },
+    {
+      "original": "titans/sglang_backend.py:ingest",
+      "current": "titans/sglang_backend.py:ingest",
+      "body_identical": true
+    },
+    {
+      "original": "titans/sglang_backend.py:clone_state",
+      "current": "titans/sglang_backend.py:clone_state",
+      "body_identical": true
+    },
+    {
+      "original": "titans/sglang_backend.py:answer",
+      "current": "titans/sglang_backend.py:answer",
+      "body_identical": true
+    },
+    {
+      "original": "titans/sglang_backend.py:close",
+      "current": "titans/sglang_backend.py:close",
+      "body_identical": true
+    },
+    {
+      "original": "titans/model.py:_local_attention",
+      "current": "titans/model.py:_local_attention",
+      "body_identical": true
+    },
+    {
+      "original": "titans/model.py:_forward_embeddings",
+      "current": "titans/model.py:_forward_embeddings",
+      "body_identical": true
+    },
+    {
+      "original": "titans/model.py:_forward_tokens",
+      "current": "titans/model.py:_forward_tokens",
+      "body_identical": true
+    },
+    {
+      "original": "titans/model.py:answer",
+      "current": "titans/model.py:answer",
+      "body_identical": true
+    },
+    {
+      "original": "titans/model.py:ingest",
+      "current": "titans/model.py:ingest",
+      "body_identical": true
+    },
+    {
+      "original": "titans/training.py:_step",
+      "current": "titans/training.py:_step",
+      "body_identical": true
+    },
+    {
+      "original": "titans/training.py:flush",
+      "current": "titans/training.py:flush",
+      "body_identical": true
+    }
+  ],
+  "gpu_ops_byte_identical": true,
+  "current_source_sha256": {
+    "titans/__init__.py": "8f07bf506c8bdc598e30d3144eab5f3b93825de793482cae554d4bb77c0b3914",
+    "titans/cuda_graphs.py": "e544573c3876a93c315be1640fdb2bf4f4da2f50ce17fbef8a9d825878ae3d14",
+    "titans/gpu_ops.py": "d734c6f4642c9944479d9bb8db3a437647853aa9734ff5de77ac4f888a5452df",
+    "titans/kernels.py": "946d2bbc752c2d2267de1b7f35e6e28c6d34c8a4bd52630b0c47f9a8e70f8fac",
+    "titans/learning.py": "3ccad450749aec7da98e39f003b219b55776e07f40533623f55effdad7c9869f",
+    "titans/model.py": "c7032856b7c67271ca3229ef617a65cb98777b2a09f913b44a3ccf2c1fd97294",
+    "titans/protocols.py": "63a2a34e9427c1ca6dcd80c2b0381cb3c65eb6bc5dbdec4921117fb0e7d56b13",
+    "titans/serving.py": "93f128d7e110abd00cca48f140c3a8f6e62011e1dd81c493cabde2b8cd6bcadb",
+    "titans/sglang_backend.py": "07454db3679a9f0def1d71973b21b22a5a1f4001c5010cb36f3f199e2335ee25",
+    "titans/sglang_models/__init__.py": "73ef36be644bc85722c73a48daf1cb29dd025c077b3f7ee320ae5178ec65d76c",
+    "titans/sglang_models/titans_llama.py": "3a5970b7534dc29b1bc90c9030142a5d7aaf98e2b764cc1dc2dde951a4a4a68c",
+    "titans/state.py": "e21b64e09ac35d1f8dbac9cd9c6228d241ee24dd46e64fc0c0acb1e322d09cee",
+    "titans/titans.py": "5155f9bcc4eaf9c25c094d633f27cd8a29c1e24b2cd7d17098970d97047b58ab",
+    "titans/training.py": "fe6529ff3ff5f071d98dfca831215346b77a5cde448994c0781eaf072b1044d4",
+    "titans/types.py": "ce7c3662abb676c93bf75924c0d7abc9b11540f13dd6197b9c1f7665d0174d23"
+  },
+  "cpu_tests": "97 passed; includes compiled/eager training equivalence and outer-gradient checks",
+  "gpu_training": "Not run per user instruction",
+  "performance": "No new throughput or training-speed claim"
+}

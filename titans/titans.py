@@ -5,13 +5,58 @@ There is no autograd invocation or per-token parameter-gradient allocation in
 the production update. Ordinary PyTorch operations retain outer gradients.
 """
 
+import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Self
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .types import TitansConfig
+from .model import ContinualModel
+from .protocols import MemoryFactory, MemoryModule
+from .protocols import MemoryState as StateProtocol
+from .types import RuntimeConfig
+
+if TYPE_CHECKING:
+    from transformers import LlamaForCausalLM, PreTrainedTokenizerBase, Qwen2ForCausalLM
+
+
+@dataclass(frozen=True)
+class TitansConfig(RuntimeConfig):
+    """Memory and local-attention settings for a Llama retrofit.
+
+    Chunk size one implements tokenwise updates. Larger chunks use gradients
+    evaluated at the chunk's initial weights and commit only complete chunks.
+    Memory reads use the last committed weights. ``memory_layers`` is zero-based.
+    Fast weights and their updates use float32 unless the whole model is float64.
+    """
+
+    memory_dim: int = 128
+    memory_hidden_dim: int = 256
+    memory_depth: int = 2
+    chunk_size: int = 32
+    conv_kernel: int = 3
+    max_inner_learning_rate: float = 0.01
+    gate_bias: float = -4.0
+    inference_backend: Literal["auto", "torch", "sglang"] = "auto"
+    attention_backend: Literal["auto", "sdpa", "fa3"] = "auto"
+    use_liger: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate the fixed runtime and this method's dimensions and update rates."""
+        super().__post_init__()
+        if min(self.memory_dim, self.memory_hidden_dim, self.memory_depth,
+               self.chunk_size, self.conv_kernel) < 1:
+            raise ValueError("Memory dimensions, chunk size and kernel must be positive")
+        if not 0 < self.max_inner_learning_rate <= 1:
+            raise ValueError("max_inner_learning_rate must be in (0, 1]")
+        if not math.isfinite(self.gate_bias):
+            raise ValueError("gate_bias must be finite")
 
 
 def mlp(weights: tuple[Tensor, ...], inputs: Tensor) -> Tensor:
@@ -159,8 +204,32 @@ class MemoryState:
         self.pending = self.pending.detach()
         self.conv_tail = self.conv_tail.detach()
 
+    def tensors(self) -> tuple[Tensor, ...]:
+        """Return weights, momentum, unfinished writes and convolution history."""
+        return self.weights + self.momentum + (self.pending, self.conv_tail)
 
-class NeuralMemory(nn.Module):
+    def adaptable(self) -> Mapping[str, Tensor]:
+        """Expose active neural weights W for optional QA-based adaptation."""
+        return {str(index): value for index, value in enumerate(self.weights)}
+
+    def replace(self, updates: Mapping[str, Tensor]) -> None:
+        """Replace selected active weights without overwriting momentum or buffers.
+
+        Args:
+            updates: Weight indices as strings, with matching tensor shapes.
+
+        Raises:
+            ValueError: A name or tensor shape is incompatible with the memory.
+        """
+        weights = list(self.weights)
+        for name, value in updates.items():
+            if name not in self.adaptable() or value.shape != self.adaptable()[name].shape:
+                raise ValueError("Invalid Titans memory replacement")
+            weights[int(name)] = value
+        self.weights = tuple(weights)
+
+
+class NeuralMemory(MemoryModule):
     """Input projections, causal convolution, learned gates and deep fast memory."""
 
     def __init__(self, hidden_size: int, config: TitansConfig) -> None:
@@ -211,7 +280,7 @@ class NeuralMemory(nn.Module):
                            device=parameter.device, dtype=parameter.dtype)
         return MemoryState(weights, tuple(torch.zeros_like(w) for w in weights), pending, tail)
 
-    def forward(self, hidden: Tensor, state: MemoryState, *, write: bool = True) -> Tensor:
+    def transition(self, hidden: Tensor, state: StateProtocol, *, write: bool = True) -> Tensor:
         """Read committed memory and optionally enqueue and commit causal writes.
 
         Args:
@@ -224,6 +293,8 @@ class NeuralMemory(nn.Module):
             within an unfinished chunk all use its initial weights; no current
             or future token's write is visible until the next chunk.
         """
+        if not isinstance(state, MemoryState):
+            raise TypeError("Titans requires its own MemoryState")
         from .kernels import (
             combine_read,
             compiled_chunk_update,
@@ -264,3 +335,144 @@ class NeuralMemory(nn.Module):
         return combine(torch.cat(outputs, 1), hidden, self.read_norm.weight, self.read_norm.bias,
                        self.output.weight, self.mix_gate.weight, self.mix_gate.bias,
                        self.read_norm.eps)
+
+
+def project_tokens(
+    hidden: Tensor, tail: Tensor, qkv_weight: Tensor, conv_weight: Tensor, conv_bias: Tensor,
+    gate_weight: Tensor, gate_bias: Tensor, max_learning_rate: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Project QKV, apply causal convolution and normalize keys, queries and gates.
+
+    Args:
+        hidden: Host activations [batch, tokens, hidden].
+        tail: Previous projected convolution context.
+        qkv_weight: Combined input projection matrix.
+        conv_weight: Depthwise convolution filters.
+        conv_bias: Depthwise convolution biases.
+        gate_weight: Learned forget, momentum and learning-rate projection.
+        gate_bias: Bias for the three update gates.
+        max_learning_rate: Upper bound for the inner update rate.
+
+    Returns:
+        Query, key, value, three gates, and the independent new convolution tail.
+        Update operands use float32, or float64 when hidden uses float64.
+    """
+    projected = F.linear(hidden, qkv_weight)
+    context = torch.cat((tail, projected.transpose(1, 2)), -1)
+    mixed = F.silu(F.conv1d(context, conv_weight, conv_bias,
+                           groups=conv_weight.shape[0]).transpose(1, 2))
+    query, key, value = mixed.chunk(3, -1)
+    dtype = torch.float64 if hidden.dtype == torch.float64 else torch.float32
+    query = F.normalize(query.to(dtype), dim=-1, eps=1e-6)
+    key = F.normalize(key.to(dtype), dim=-1, eps=1e-6)
+    value = value.to(dtype)
+    gates = F.linear(hidden, gate_weight, gate_bias).to(dtype).sigmoid()
+    gates = gates * gates.new_tensor([1.0, 1.0, max_learning_rate])
+    tail_length = conv_weight.shape[-1] - 1
+    new_tail = context[..., -tail_length:].clone() if tail_length else context[..., :0].clone()
+    return query, key, value, gates, new_tail
+
+
+
+def combine_read(
+    reads: Tensor, hidden: Tensor, norm_weight: Tensor, norm_bias: Tensor,
+    output_weight: Tensor, gate_weight: Tensor, gate_bias: Tensor, norm_eps: float,
+) -> Tensor:
+    """Normalize and project a memory read, then apply the learned residual gate.
+
+    Args:
+        reads: Retrieved memory values [batch, tokens, memory_dimension].
+        hidden: Original host activations, which determine the mix gate.
+        norm_weight: Read normalization scales.
+        norm_bias: Read normalization biases.
+        output_weight: Projection into the host residual width.
+        gate_weight: Mix-gate projection matrix.
+        gate_bias: Mix-gate biases.
+        norm_eps: Layer-normalization stabilizer.
+
+    Returns:
+        Gated memory contribution in the host's dtype and shape.
+    """
+    read = F.layer_norm(reads.to(hidden.dtype), (reads.shape[-1],), norm_weight, norm_bias, norm_eps)
+    return F.linear(read, output_weight) * F.linear(hidden, gate_weight, gate_bias).sigmoid()
+
+
+
+def titans(config: TitansConfig = TitansConfig()) -> MemoryFactory:
+    """Instantiate the Titans method as a factory accepted by ContinualModel.
+
+    Args:
+        config: Titans dimensions, chunked inner updates and integration settings.
+
+    Returns:
+        A constructor creating an independent NeuralMemory at each selected layer.
+    """
+    return partial(NeuralMemory, config=config)
+
+
+class TitansModel(ContinualModel):
+    """Convenience constructor for the Titans method on the fixed runtime."""
+
+    supports_sglang = True
+
+    def __init__(
+        self, backbone: "LlamaForCausalLM | Qwen2ForCausalLM",
+        tokenizer: "PreTrainedTokenizerBase", config: TitansConfig = TitansConfig(),
+        *, memory_factory: MemoryFactory | None = None,
+    ) -> None:
+        """Attach Titans or an explicitly supplied compatible method factory.
+
+        Args:
+            backbone: Frozen single-device Llama or Qwen2 backbone.
+            tokenizer: Tokenizer matching the backbone vocabulary.
+            config: Runtime and Titans algorithm settings.
+            memory_factory: Optional constructor used by generic checkpoint restoration.
+        """
+        super().__init__(backbone, tokenizer, config,
+                         memory_factory=memory_factory or titans(config))
+        if memory_factory is not None:
+            self.supports_sglang = all(isinstance(m, NeuralMemory) for m in self.memories.values())
+
+    @classmethod
+    def from_pretrained(
+        cls, model_name_or_path: str | Path, config: TitansConfig = TitansConfig(),
+        *, memory_factory: MemoryFactory | None = None, device: str = "cpu",
+        dtype: torch.dtype = torch.float32, local_files_only: bool = False,
+    ) -> Self:
+        """Load a pretrained backbone and attach untrained Titans modules.
+
+        Args:
+            model_name_or_path: Hugging Face ID or local checkpoint.
+            config: Runtime and method settings.
+            memory_factory: Optional explicit constructor for checkpoint restoration.
+            device: Single target device.
+            dtype: Backbone and adapter parameter dtype.
+            local_files_only: Whether downloads are forbidden.
+
+        Returns:
+            A frozen-backbone model with fresh stream ownership.
+        """
+        return super().from_pretrained(
+            model_name_or_path, config, memory_factory=memory_factory or titans(config),
+            device=device, dtype=dtype, local_files_only=local_files_only,
+        )
+
+    @classmethod
+    def load_pretrained(
+        cls, path: str | Path, *, device: str = "cpu", dtype: torch.dtype = torch.float32,
+    ) -> Self:
+        """Restore a Titans checkpoint, including the previous version's format.
+
+        Args:
+            path: Directory written by save_pretrained.
+            device: Single target device.
+            dtype: Backbone and adapter parameter dtype.
+
+        Returns:
+            Trained Titans parameters with fresh stream ownership.
+        """
+        settings = json.loads((Path(path) / "titans.json").read_text())["config"]
+        settings["memory_layers"] = tuple(settings["memory_layers"])
+        config = TitansConfig(**settings)
+        return super().load_pretrained(path, memory_factory=titans(config), config=config,
+                                       device=device, dtype=dtype)

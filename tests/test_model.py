@@ -233,13 +233,10 @@ def test_fit_exact_budget_and_partial_accumulation(tiny_model: TitansModel, tmp_
     assert result.stop_reason == "token_budget"
 
 
-def test_unfrozen_backbone_can_train(tiny_model: TitansModel, tmp_path: Path) -> None:
-    """Explicitly opting into backbone training must change its weights."""
-    before = tiny_model.backbone.model.layers[0].mlp.down_proj.weight.detach().clone()
-    tiny_model.fit([TrainingEpisode("a", (Document("a", "Alice lives in Paris"),))],
-                   TrainingConfig(tmp_path / "unfrozen", max_tokens=20,
-                                  objective="language_modeling", freeze_backbone=False))
-    assert not torch.equal(before, tiny_model.backbone.model.layers[0].mlp.down_proj.weight)
+def test_backbone_unfreezing_is_rejected() -> None:
+    """The fixed runtime contract rejects attempts to update backbone weights."""
+    with pytest.raises(ValueError, match="always freezes"):
+        TrainingConfig(Path("unused"), max_tokens=20, freeze_backbone=False)
 
 
 def test_checkpoint_roundtrip(tiny_model: TitansModel, tmp_path: Path) -> None:

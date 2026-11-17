@@ -14,6 +14,8 @@ image = (
     .add_local_dir("titans", "/workspace/titans")
     .add_local_dir("tests", "/workspace/tests")
     .add_local_dir("benchmarks", "/workspace/benchmarks")
+    .add_local_dir("checks", "/workspace/checks")
+    .add_local_dir("examples", "/workspace/examples")
 )
 cache = modal.Volume.from_name("titans-verification-cache", create_if_missing=True)
 
@@ -51,7 +53,7 @@ def benchmark() -> str:
     import subprocess
     import sys
 
-    subprocess.run([sys.executable, "-m", "pytest", "/workspace/tests/test_gpu.py",
+    subprocess.run([sys.executable, "-m", "pytest", "/workspace/checks/gpu_inference.py",
                     "-q", "--tb=short", "--show-capture=no"], check=True, cwd="/workspace")
     output = Path("/tmp/titans-h100-report.json")
     subprocess.run([sys.executable, "-m", "benchmarks.h100", "--output", str(output), "--profile"],
@@ -77,7 +79,7 @@ def compare_backbones() -> str:
         ["nvidia-smi", "--query-gpu=name,uuid", "--format=csv,noheader"], text=True,
     ).strip()
     checked = subprocess.run(
-        [sys.executable, "-m", "pytest", "/workspace/tests/test_gpu.py", "-q",
+        [sys.executable, "-m", "pytest", "/workspace/checks/gpu_inference.py", "-q",
          "--tb=short", "--show-capture=no"], check=False, cwd="/workspace",
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )

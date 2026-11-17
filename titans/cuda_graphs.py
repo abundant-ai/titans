@@ -10,17 +10,17 @@ from typing import TYPE_CHECKING
 import torch
 from torch import Tensor
 
-from .memory import MemoryState
 from .state import StreamState
+from .titans import MemoryState
 
 if TYPE_CHECKING:
-    from .model import TitansModel
+    from .model import ContinualModel
 
 
 class GraphDecoder:
     """Capture one graph per pending-write phase after the attention cache fills."""
 
-    def __init__(self, model: "TitansModel") -> None:
+    def __init__(self, model: "ContinualModel") -> None:
         """Create a lazy graph runner tied to immutable inference parameters.
 
         Args:

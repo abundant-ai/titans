@@ -1,13 +1,28 @@
 """Titans memory for pretrained Llama models."""
 
-from .model import TitansModel
+from .learning import GradientUpdate, cross_entropy
+from .model import ContinualModel
+from .protocols import (
+    DataGenerator,
+    LossContext,
+    LossValue,
+    MemoryFactory,
+    MemoryModule,
+    MemoryState,
+    Objective,
+    UpdateContext,
+    UpdateResult,
+    UpdateRule,
+)
 from .state import StreamState
+from .titans import TitansConfig, TitansModel, titans
 from .types import (
     Answer,
     AnswerConfig,
     Document,
+    LearningResult,
     Question,
-    TitansConfig,
+    RuntimeConfig,
     TrainingConfig,
     TrainingEpisode,
     TrainingQuestion,
@@ -15,6 +30,9 @@ from .types import (
 )
 
 __all__ = [
+    "GradientUpdate", "cross_entropy", "DataGenerator", "LossContext", "LossValue",
+    "MemoryFactory", "MemoryModule", "MemoryState", "Objective", "UpdateContext",
+    "UpdateResult", "UpdateRule",
     "Answer", "AnswerConfig", "Document", "Question", "StreamState", "TitansConfig",
-    "TitansModel", "TrainingConfig", "TrainingEpisode", "TrainingQuestion", "TrainingResult",
+    "ContinualModel", "RuntimeConfig", "LearningResult", "titans", "TitansModel", "TrainingConfig", "TrainingEpisode", "TrainingQuestion", "TrainingResult",
 ]

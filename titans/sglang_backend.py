@@ -16,13 +16,13 @@ from .state import StreamState
 from .types import Answer, AnswerConfig, Document, Question
 
 if TYPE_CHECKING:
-    from .model import TitansModel
+    from .model import ContinualModel
 
 
 class SGLangBackend:
     """One local engine; states stay on its GPU worker between API calls."""
 
-    def __init__(self, model: "TitansModel") -> None:
+    def __init__(self, model: "ContinualModel") -> None:
         """Export current trained weights and start the custom Titans engine.
 
         Args:

@@ -1,5 +1,9 @@
 # GPU runtime
 
+This guide describes the existing Titans-specific accelerator path. Generic
+methods and explicit QA feedback use the local PyTorch runtime. Historical H100
+measurements predate the protocol refactor and have not been re-run for it.
+
 `Qwen/Qwen2.5-1.5B-Instruct` is the default backbone for examples and benchmarks.
 `HuggingFaceTB/SmolLM2-1.7B-Instruct` remains available as a comparison baseline.
 Both use the same public API, memory kernels and SGLang worker. Select either model ID
@@ -176,3 +180,24 @@ uses 2,048-token backpropagation windows, 8,192 tokens per step, activation
 checkpointing and Liger's fused loss. Warmup, training and checkpoint times are
 recorded separately. This synthetic workload measures execution speed; it does
 not evaluate the proposed mixed document/QA training recipe.
+
+
+## Ad hoc inference checks on Modal
+
+```bash
+uvx modal run --env testing checks/modal_inference.py --output validation/gpu_inference.json
+```
+
+This manually invoked job requests one L4 with a 30-minute execution limit.
+It runs eight portable checks from `checks/gpu_inference.py`: kernel output parity,
+compiled memory transitions, both methods' streaming and answer isolation, and
+untrained checkpoint restoration. Add `--hopper` to run all 17 checks on one H200,
+including FA3 and CUDA graph state equivalence. No post-training, QA feedback update, backward
+pass or optimizer step runs. Titans' analytic test-time memory transition remains
+part of document ingestion; shared parameters remain unchanged.
+
+The file is outside default pytest discovery and has no CI workflow. The report
+records package versions, GPU identity, test output and SHA-256 hashes of the
+uploaded sources. Small randomly initialized HF backbones establish execution
+correctness only. The separate historical `--compare` benchmark above includes
+post-training and is not invoked by this check.

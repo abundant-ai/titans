@@ -1,13 +1,29 @@
 # Validation record
 
-The CPU suite passes 74 tests, and all 16 CUDA tests pass on the H100. CUDA tests
-are skipped on the local Mac. The CPU checks include the independent equation
-oracle, outer gradients, finite differences, compiled/eager agreement, training,
-state ownership and checkpoint restoration. Ruff and the explicit-type/docstring
-audit pass.
+The refactored library passes 97 CPU tests. These cover the equation oracle,
+outer gradients, finite differences, compiled/eager agreement, training, custom
+methods/objectives/update rules, state ownership and checkpoint restoration.
+
+GPU checks are manually invoked through `checks/modal_inference.py`, outside
+default pytest discovery and CI. They cover inference only; they do not run
+post-training, QA feedback learning or optimizer steps. The earlier measurements
+below predate the protocol refactor and remain historical evidence.
+
+Current GPU verification was **skipped at the user's request** after Modal left
+H100, H200 and L4 calls queued without allocating a container. The queued jobs
+were stopped. [`modal_attempts.json`](modal_attempts.json) records the observed
+status; zero GPU tests and zero GPU training steps ran for this refactor.
+
+[`optimization_preservation.json`](optimization_preservation.json) compares the
+refactor with commit `2260f95668a4c3d40fd6050292a1d2f74d8f5a5c`. All 36 checked
+optimization-related function bodies are unchanged, including memory equations,
+compiler wrappers, attention execution, CUDA graph handling and SGLang serving.
+`gpu_ops.py`, which supplies FA3 and Liger, is byte-for-byte unchanged. This is
+source-preservation evidence; it does not substitute for a new GPU performance
+measurement. GPU training was not run, as requested.
 
 
-## Qwen2.5 versus SmolLM2 on one H100
+## Historical Qwen2.5 versus SmolLM2 on one H100
 
 [`h100_comparison.json`](h100_comparison.json) records the completed paired run.
 [`h100_comparison_verification.json`](h100_comparison_verification.json) links the

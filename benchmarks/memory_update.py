@@ -13,7 +13,7 @@ from torch import Tensor
 
 from tests.reference import reference_chunk
 from titans.kernels import compiled_chunk_update
-from titans.memory import chunk_update
+from titans.titans import chunk_update
 
 
 def synchronize(device: torch.device) -> None:

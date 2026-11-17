@@ -1,7 +1,7 @@
 # Paper alignment
 
 The reference is [Titans: Learning to Memorize at Test Time, v1](https://arxiv.org/html/2501.00663v1).
-This library implements its associative neural-memory updates and attaches them
+The method in [`titans/titans.py`](../titans/titans.py) implements its associative neural-memory updates and attaches them
 to a pretrained Llama or Qwen2 model. The retrofit has its own retrieval schedule and residual
 gate. It does not reproduce the paper's complete from-scratch MAG architecture
 or its published evaluation results.
@@ -14,6 +14,10 @@ or its published evaluation results.
 | Retrieval, eq. 15 | Forward pass through committed fast weights | Read-only policy and source-preservation tests |
 | Persistent inputs, §3.3 | Learned prefix embeddings with retained attention KV | Bounded-cache, checkpoint and causality tests |
 | Gated memory, §4.2 | Add a normalized, projected memory branch to the host's attention residual | Explicit retrofit choice; stock Llama/Qwen2 equivalence when disabled |
+
+Explicit QA feedback updates through `learn` are an optional extension. They
+change the active memory or shared parameters according to the supplied update
+policy and are not part of the paper-aligned associative recurrence below.
 
 ## Exact recurrence and optimized chunks
 

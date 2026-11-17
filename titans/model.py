@@ -1,13 +1,13 @@
-"""A pretrained Llama or Qwen2 model with bounded attention and gated Titans memory branches."""
+"""Fixed stream execution for a frozen Llama/Qwen2 and pluggable memory modules."""
 
 import json
 import shutil
 import tempfile
 import uuid
 from collections.abc import Iterable
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self, final
 
 import torch
 from safetensors.torch import load_file, save_file
@@ -24,14 +24,14 @@ from transformers import (
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
-from .memory import NeuralMemory
+from .protocols import DataGenerator, MemoryFactory, Objective, UpdateRule
 from .state import AttentionState, StreamState
 from .types import (
     Answer,
     AnswerConfig,
     Document,
     Question,
-    TitansConfig,
+    RuntimeConfig,
     TrainingConfig,
     TrainingEpisode,
     TrainingResult,
@@ -39,29 +39,34 @@ from .types import (
 
 if TYPE_CHECKING:
     from .sglang_backend import SGLangBackend
+    from .types import LearningResult
 
 
-class TitansModel(nn.Module):
-    """Stable API for attaching, post-training and using a memory-equipped Llama or Qwen2.
+class ContinualModel(nn.Module):
+    """Frozen backbone runtime with causal, replaceable memory transitions.
 
-    This is a MAG-inspired pretrained retrofit, with the paper's memory update
-    rule. It is not a reproduction of the paper's from-scratch MAG architecture.
-    A model instance supports one device and one stream per public call. The
-    numerical memory core also supports batches of independent streams.
+    Ingestion order, bounded attention and branch ownership are fixed. A factory
+    supplies the algorithm at each selected layer. Custom algorithms use the
+    PyTorch runtime; specialized serving adapters declare their own support.
     """
+
+    supports_sglang = False
 
     def __init__(
         self,
         backbone: LlamaForCausalLM | Qwen2ForCausalLM,
         tokenizer: PreTrainedTokenizerBase,
-        config: TitansConfig = TitansConfig(),
+        config: RuntimeConfig = RuntimeConfig(),
+        *,
+        memory_factory: MemoryFactory,
     ) -> None:
         """Attach initialized memory modules to an existing pretrained Llama or Qwen2.
 
         Args:
             backbone: An unquantized, single-device Hugging Face Llama or Qwen2 model.
             tokenizer: Its tokenizer; vocabulary IDs must match the backbone.
-            config: Memory placement, dimensions and attention window.
+            config: Memory placement and bounded backbone execution settings.
+            memory_factory: Constructs a fresh method module for each selected layer.
 
         Raises:
             ValueError: The architecture, device placement or RoPE mode is unsupported.
@@ -84,9 +89,11 @@ class TitansModel(nn.Module):
         self.config = config
         parameter = backbone.model.embed_tokens.weight
         self.memories = nn.ModuleDict({
-            str(index): NeuralMemory(backbone.config.hidden_size, config)
+            str(index): memory_factory(backbone.config.hidden_size)
             for index in config.memory_layers
         }).to(device=parameter.device, dtype=parameter.dtype)
+        if len({id(module) for module in self.memories.values()}) != len(config.memory_layers):
+            raise ValueError("memory_factory must create independent modules for each layer")
         self.persistent = nn.Parameter(torch.empty(
             1, config.persistent_tokens, backbone.config.hidden_size,
             device=parameter.device, dtype=parameter.dtype,
@@ -108,6 +115,10 @@ class TitansModel(nn.Module):
         Raises:
             RuntimeError: SGLang was explicitly requested for a CPU model.
         """
+        if not self.supports_sglang:
+            if self.config.inference_backend == "sglang":
+                raise ValueError("This memory method has no SGLang adapter; use torch")
+            return False
         device = self.backbone.model.embed_tokens.weight.device
         if self.config.inference_backend == "sglang" and device.type != "cuda":
             raise RuntimeError("SGLang inference requires a CUDA model")
@@ -140,17 +151,19 @@ class TitansModel(nn.Module):
     def from_pretrained(
         cls,
         model_name_or_path: str | Path,
-        config: TitansConfig = TitansConfig(),
+        config: RuntimeConfig = RuntimeConfig(),
         *,
+        memory_factory: MemoryFactory,
         device: str = "cpu",
         dtype: torch.dtype = torch.float32,
         local_files_only: bool = False,
-    ) -> "TitansModel":
+    ) -> "ContinualModel":
         """Load a Llama or Qwen2 checkpoint and attach new, untrained memory modules.
 
         Args:
             model_name_or_path: Hugging Face model ID or local backbone directory.
-            config: Settings for newly initialized memory components.
+            config: Bounded runtime and placement settings.
+            memory_factory: Constructs the new method modules.
             device: One device, such as ``cpu`` or ``cuda:0``.
             dtype: Backbone and learned-adapter storage dtype.
             local_files_only: Whether downloads are forbidden.
@@ -165,7 +178,7 @@ class TitansModel(nn.Module):
         tokenizer = AutoTokenizer.from_pretrained(
             str(model_name_or_path), local_files_only=local_files_only,
         )
-        return cls(backbone, tokenizer, config)
+        return cls(backbone, tokenizer, config, memory_factory=memory_factory)
 
     def _validate_state(self, state: StreamState) -> None:
         """Reject foreign, stale, failed or differently placed streams.
@@ -177,11 +190,12 @@ class TitansModel(nn.Module):
             ValueError: The stream cannot safely be used by the current model.
         """
         if not state._valid:
-            raise ValueError("This stream was invalidated by a failed ingest")
+            raise ValueError("This stream was invalidated by a failed ingest or learning update")
         if state._owner != self._owner or state._revision != self._revision:
-            raise ValueError("Stream belongs to a different model or predates fit")
+            raise ValueError("Stream belongs to a different model or predates fit or a shared-parameter update")
         device = self.backbone.model.embed_tokens.weight.device
-        if any(memory.weights[0].device != device for memory in state._memory.values()):
+        if any(tensor.device != device for memory in state._memory.values()
+               for tensor in memory.tensors()):
             raise ValueError("Model moved devices; start a new stream")
 
     def _new_state(self) -> StreamState:
@@ -436,6 +450,7 @@ class TitansModel(nn.Module):
         """
         return self.tokenizer.encode(f"\nQuestion: {question.text}\nAnswer:", add_special_tokens=False)
 
+    @final
     @torch.no_grad()
     def ingest(self, document: Document, state: StreamState | None = None) -> StreamState:
         """Append a complete document, updating only that stream's temporary state.
@@ -534,12 +549,18 @@ class TitansModel(nn.Module):
         return Answer(question.question_id, text, text.casefold() == "[unknown]",
                       len(generated), stopped_by_limit)
 
-    def fit(self, episodes: Iterable[TrainingEpisode], config: TrainingConfig) -> TrainingResult:
-        """Post-train memory and optionally the backbone on independent episodes.
+    def fit(
+        self, episodes: Iterable[TrainingEpisode] | DataGenerator, config: TrainingConfig,
+        *, loss: Objective | None = None, update: UpdateRule | None = None,
+    ) -> TrainingResult:
+        """Post-train a memory method while keeping the backbone fixed.
 
         Args:
-            episodes: One pass over document streams with optional QA supervision.
-            config: Budget, truncation, objective and output checkpoint directory.
+            episodes: One pass over streams, or a generator called with config.seed.
+            config: Budget, truncation, supervision routing and output checkpoint.
+            loss: Arbitrary objective; defaults to token cross-entropy.
+            update: Explicit checkpoint update rule for phi, W, or both. When supplied,
+                use document_qa routing; updates occur after complete QA checkpoints.
 
         Returns:
             Checkpoint location, actual work and measured training loss.
@@ -554,7 +575,45 @@ class TitansModel(nn.Module):
         """
         from .training import fit_model
 
-        return fit_model(self, episodes, config)
+        return fit_model(self, episodes, config, loss=loss, update=update)
+
+    def start_stream(self) -> StreamState:
+        """Create a local stream; documents and questions never reset it implicitly.
+
+        Returns:
+            A fresh detached state carrying learned initialization and bounded caches.
+        """
+        if self._uses_sglang():
+            raise ValueError("Explicit streams and feedback require inference_backend='torch'")
+        with torch.no_grad():
+            return self._new_state()
+
+    def shared_parameters(self) -> tuple[nn.Parameter, ...]:
+        """Return phi, excluding every frozen backbone parameter."""
+        return tuple(self.memories.parameters()) + (self.persistent,)
+
+    def learn(
+        self, question: Question, target_answer: str, state: StreamState,
+        *, loss: Objective | None = None, update: UpdateRule | None = None,
+        retain_history: bool = False,
+    ) -> "LearningResult":
+        """Adapt using explicitly supplied feedback, leaving teacher tokens off-stream.
+
+        Args:
+            question: Question whose answer has now become available.
+            target_answer: Released supervision, never a hidden evaluation answer.
+            state: Continuing stream receiving functional W replacements.
+            loss: Arbitrary scalar objective; defaults to answer cross-entropy.
+            update: Target/optimizer policy; defaults to SGD on W only.
+            retain_history: Preserve the current unroll for meta-gradients into phi.
+
+        Returns:
+            Loss and token accounting. Updating phi invalidates other live streams.
+        """
+        from .learning import learn
+
+        return learn(self, question, target_answer, state, loss=loss, update=update,
+                     retain_history=retain_history)
 
     def save_pretrained(self, path: str | Path) -> Path:
         """Atomically save a complete inference checkpoint without overwriting files.
@@ -581,7 +640,7 @@ class TitansModel(nn.Module):
             adapter["persistent"] = self.persistent.detach().cpu().contiguous()
             save_file(adapter, temporary / "memory.safetensors")
             (temporary / "titans.json").write_text(json.dumps({
-                "format_version": 1, "revision": self._revision, "config": asdict(self.config),
+                "format_version": 2, "revision": self._revision, "config": asdict(self.config),
             }, indent=2) + "\n")
             temporary.rename(destination)
         except Exception:
@@ -591,12 +650,16 @@ class TitansModel(nn.Module):
 
     @classmethod
     def load_pretrained(
-        cls, path: str | Path, *, device: str = "cpu", dtype: torch.dtype = torch.float32,
-    ) -> "TitansModel":
+        cls, path: str | Path, *, memory_factory: MemoryFactory,
+        config: RuntimeConfig | None = None, device: str = "cpu",
+        dtype: torch.dtype = torch.float32,
+    ) -> Self:
         """Restore trained weights from an offline checkpoint created by this library.
 
         Args:
-            path: Complete Titans checkpoint directory.
+            path: Complete checkpoint directory.
+            memory_factory: Explicit trusted method constructor; code is not loaded from metadata.
+            config: Optional method-specific settings; otherwise restore runtime fields.
             device: Single destination device.
             dtype: Backbone and learned-adapter dtype.
 
@@ -606,12 +669,17 @@ class TitansModel(nn.Module):
         """
         source = Path(path)
         metadata = json.loads((source / "titans.json").read_text())
-        if metadata["format_version"] != 1:
+        if metadata["format_version"] not in (1, 2):
             raise ValueError("Unsupported Titans checkpoint format")
         settings = metadata["config"]
         settings["memory_layers"] = tuple(settings["memory_layers"])
-        model = cls.from_pretrained(source / "backbone", TitansConfig(**settings),
-                                    device=device, dtype=dtype, local_files_only=True)
+        runtime_fields = {field.name for field in fields(RuntimeConfig)}
+        config = config or RuntimeConfig(**{
+            key: value for key, value in settings.items() if key in runtime_fields
+        })
+        model = cls.from_pretrained(source / "backbone", config,
+                                    memory_factory=memory_factory, device=device, dtype=dtype,
+                                    local_files_only=True)
         adapter = load_file(source / "memory.safetensors")
         model.memories.load_state_dict({
             key.removeprefix("memories."): value

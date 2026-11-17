@@ -18,9 +18,8 @@ from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaConfig, Qwen2Config
 
 from titans.cuda_graphs import GraphDecoder
-from titans.model import TitansModel
 from titans.serving import RequestControl, StateRegistry
-from titans.types import TitansConfig
+from titans.titans import TitansConfig, TitansModel
 
 
 class TitansMetadataProcessor(CustomLogitProcessor):

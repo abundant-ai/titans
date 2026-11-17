@@ -1,8 +1,12 @@
 """Public data contracts for document streams and post-training."""
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from .state import StreamState
 
 
 @dataclass(frozen=True)
@@ -40,48 +44,29 @@ class TrainingEpisode:
 
 
 @dataclass(frozen=True)
-class TitansConfig:
-    """Memory and local-attention settings for a Llama retrofit.
+class RuntimeConfig:
+    """Fixed backbone execution settings, independent of the memory algorithm."""
 
-    Chunk size one implements tokenwise updates. Larger chunks use gradients
-    evaluated at the chunk's initial weights and commit only complete chunks.
-    Memory reads use the last committed weights. ``memory_layers`` is zero-based.
-    Fast weights and their updates use float32 unless the whole model is float64.
-    """
-
-    memory_dim: int = 128
-    memory_hidden_dim: int = 256
-    memory_depth: int = 2
     memory_layers: tuple[int, ...] = (0,)
-    chunk_size: int = 32
     attention_window: int = 512
     persistent_tokens: int = 4
-    conv_kernel: int = 3
-    max_inner_learning_rate: float = 0.01
-    gate_bias: float = -4.0
     compile_kernels: bool = True
     prefill_chunk_size: int = 256
-    inference_backend: Literal["auto", "torch", "sglang"] = "auto"
-    attention_backend: Literal["auto", "sdpa", "fa3"] = "auto"
-    use_liger: bool = True
+    inference_backend: Literal["auto", "torch", "sglang"] = "torch"
+    attention_backend: Literal["auto", "sdpa", "fa3"] = "sdpa"
+    use_liger: bool = False
     cuda_graphs: bool = True
 
     def __post_init__(self) -> None:
-        """Reject invalid dimensions and update rates before allocating a model."""
-        dimensions = (
-            self.memory_dim, self.memory_hidden_dim, self.memory_depth,
-            self.chunk_size, self.attention_window, self.conv_kernel, self.prefill_chunk_size,
-        )
-        if any(value < 1 for value in dimensions):
-            raise ValueError("Memory dimensions, chunk size, window and kernel must be positive")
+        """Reject invalid runtime settings before allocating the backbone adapter."""
+        if min(self.attention_window, self.prefill_chunk_size) < 1:
+            raise ValueError("Attention window and prefill size must be positive")
         if self.persistent_tokens < 0:
             raise ValueError("persistent_tokens must be nonnegative")
-        if len(set(self.memory_layers)) != len(self.memory_layers):
-            raise ValueError("memory_layers must contain unique indices")
         if not self.memory_layers or min(self.memory_layers) < 0:
             raise ValueError("At least one nonnegative memory layer is required")
-        if not 0 < self.max_inner_learning_rate <= 1:
-            raise ValueError("max_inner_learning_rate must be in (0, 1]")
+        if len(set(self.memory_layers)) != len(self.memory_layers):
+            raise ValueError("memory_layers must contain unique indices")
         if self.inference_backend not in ("auto", "torch", "sglang"):
             raise ValueError("Unknown inference backend")
         if self.attention_backend not in ("auto", "sdpa", "fa3"):
@@ -111,9 +96,12 @@ class TrainingConfig:
 
     def __post_init__(self) -> None:
         """Validate the finite token budget and optimizer controls."""
+        if not self.freeze_backbone:
+            raise ValueError("The continual-learning runtime always freezes the backbone")
         if min(self.max_tokens, self.sequence_length, self.tokens_per_step) < 1:
             raise ValueError("Token budgets and sequence_length must be positive")
-        if self.learning_rate <= 0 or self.max_grad_norm <= 0:
+        if any(not math.isfinite(value) or value <= 0
+               for value in (self.learning_rate, self.max_grad_norm)):
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.objective not in ("language_modeling", "document_qa", "mixed"):
             raise ValueError("Unknown training objective")
@@ -121,7 +109,12 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class TrainingResult:
-    """Measurements for one fit call; loss is averaged over supervised tokens."""
+    """Measurements for one fit call and an optional continuing stream.
+
+    Default AdamW training averages loss using Objective weights. Custom-update
+    training reports the mean normalized checkpoint loss and returns final_state;
+    W-only changes live there and are not part of the shared-parameter checkpoint.
+    """
 
     checkpoint_path: Path
     tokens_processed: int
@@ -129,6 +122,7 @@ class TrainingResult:
     mean_loss: float | None
     elapsed_seconds: float
     stop_reason: Literal["token_budget", "data_exhausted"]
+    final_state: "StreamState | None" = None
 
 
 @dataclass(frozen=True)
@@ -157,3 +151,13 @@ class Answer:
     abstained: bool
     generated_tokens: int
     stopped_by_limit: bool
+
+
+@dataclass(frozen=True)
+class LearningResult:
+    """One explicit feedback update; teacher tokens are accounted but not committed."""
+
+    loss: float
+    tokens_processed: int
+    shared_changed: bool
+    memory_tensors_changed: int
