@@ -6,7 +6,6 @@ import tempfile
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, fields, replace
-from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, final
 
@@ -55,18 +54,15 @@ from titans.runtime.state import AttentionState, StreamState
 
 if TYPE_CHECKING:
     from titans.core.types import LearningResult
-    from titans.serving.backend import SGLangBackend
 
 
 class ContinualModel(nn.Module):
     """Fixed decoder runtime with causal, replaceable memory transitions.
 
     Ingestion order, bounded attention and branch ownership are fixed. A factory
-    supplies the algorithm at each selected layer. Custom algorithms use the
-    PyTorch runtime; specialized serving adapters declare their own support.
+    supplies the algorithm at each selected layer. All layers run locally in PyTorch.
     """
 
-    supports_sglang = False
     _config_type = RuntimeConfig
 
     def __init__(
@@ -155,50 +151,10 @@ class ContinualModel(nn.Module):
         self._owner = uuid.uuid4().hex
         self._revision = 0
         self._checkpoint_backbone = False
-        self._sglang_backend: SGLangBackend | None = None
         self.eval()
 
-    def _uses_sglang(self) -> bool:
-        """Select SGLang for CUDA inference by default, retaining the CPU reference path.
-
-        Returns:
-            Whether public inference operations must run through SGLang.
-
-        Raises:
-            RuntimeError: SGLang was explicitly requested for a CPU model.
-        """
-        if not self.supports_sglang:
-            if self.config.inference_backend == "sglang":
-                raise ValueError("This memory method has no SGLang adapter; use torch")
-            return False
-        device = self.backbone.model.embed_tokens.weight.device
-        if self.config.inference_backend == "sglang" and device.type != "cuda":
-            raise RuntimeError("SGLang inference requires a CUDA model")
-        if self.config.inference_backend != "auto":
-            return self.config.inference_backend == "sglang"
-        return (device.type == "cuda" and self.backbone.dtype in (torch.float16, torch.bfloat16)
-                and find_spec("sglang") is not None)
-
-    def _serving_backend(self) -> "SGLangBackend":
-        """Start the SGLang worker lazily for the current trained-model revision.
-
-        Returns:
-            The owned local inference engine.
-        """
-        if self._sglang_backend is None:
-            from titans.serving.backend import SGLangBackend
-
-            self._sglang_backend = SGLangBackend(self)
-        return self._sglang_backend
-
     def close(self) -> None:
-        """Release a running SGLang engine and invalidate its live state handles."""
-        if self._sglang_backend is not None:
-            try:
-                self._sglang_backend.close()
-            finally:
-                self._sglang_backend = None
-                self._revision += 1
+        """Retain the cleanup hook for callers. Local stream tensors follow Python lifetimes."""
 
     @classmethod
     def from_pretrained(
@@ -402,7 +358,7 @@ class ContinualModel(nn.Module):
 
     def _forward_embeddings(
         self, embeddings: Tensor, state: StreamState, *, write: bool = True,
-        last_only: bool = False, return_hidden: bool = False, positions: Tensor | None = None,
+        last_only: bool = False, return_hidden: bool = False,
     ) -> Tensor:
         """Forward one bounded block, mutating its owned stream state.
 
@@ -412,7 +368,6 @@ class ContinualModel(nn.Module):
             write: Whether this block may update long-term memory.
             last_only: Whether to project only the final token to vocabulary logits.
             return_hidden: Whether to return normalized activations for fused Liger loss.
-            positions: Optional GPU position buffer for the private CUDA graph runner.
 
         Returns:
             Logits [1, tokens, vocabulary] for next-token prediction.
@@ -441,10 +396,8 @@ class ContinualModel(nn.Module):
                 start = end
                 block_limit = 1 if self._custom_context else segment
             return outputs[-1] if last_only else torch.cat(outputs, dim=1)
-        if positions is None:
-            positions = torch.arange(
-                state._position, state._position + embeddings.shape[1], device=embeddings.device,
-            )
+        positions = torch.arange(state._position, state._position + embeddings.shape[1],
+                                 device=embeddings.device)
         rotary = self.backbone.model.rotary_emb(embeddings, positions[None, :])
         hidden = embeddings
         use_liger = self.config.use_liger and hidden.device.type == "cuda"
@@ -642,8 +595,6 @@ class ContinualModel(nn.Module):
             ValueError: State is stale, foreign or invalid. Any failure after
                 processing starts invalidates that state; it must be discarded.
         """
-        if self._uses_sglang():
-            return self._serving_backend().ingest(document, state)
         if state is not None:
             self._validate_state(state)
         tokens = self._document_tokens(document)
@@ -671,8 +622,6 @@ class ContinualModel(nn.Module):
             ValueError: The source state is stale, foreign or invalid.
         """
         self._validate_state(state)
-        if state._remote_id is not None:
-            return self._serving_backend().clone_state(state)
         return state._copy(detach=True)
 
     @torch.no_grad()
@@ -693,8 +642,6 @@ class ContinualModel(nn.Module):
         Raises:
             ValueError: The source stream is stale, foreign or invalid.
         """
-        if self._uses_sglang():
-            return self._serving_backend().answer(question, state, config)
         branch = self.clone_state(state)
         write = config.memory_policy == "temporary"
         prompt = self._question_tokens(question)
@@ -757,8 +704,6 @@ class ContinualModel(nn.Module):
         Returns:
             A fresh detached state carrying learned initialization and bounded caches.
         """
-        if self._uses_sglang():
-            raise ValueError("Explicit streams and feedback require inference_backend='torch'")
         with torch.no_grad():
             return self._new_state()
 
@@ -883,7 +828,9 @@ class ContinualModel(nn.Module):
         if metadata["format_version"] not in (1, 2, 3, 4):
             raise ValueError("Unsupported Titans checkpoint format")
         settings = metadata["config"]
-        settings.pop("attention_backend", None)  # A checkpoint can move between runtimes.
+        settings.pop("attention_backend", None)
+        settings.pop("inference_backend", None)  # Restore old checkpoints onto the local runtime.
+        settings.pop("cuda_graphs", None)
         settings["memory_layers"] = tuple(settings["memory_layers"])
         if metadata["format_version"] < 4:
             settings["mac_segment_length"] = 1
@@ -915,6 +862,8 @@ class ContinualModel(nn.Module):
                 """Restore the next configured memory layer at the decoder's hidden width."""
                 options = dict(next(layer_settings))
                 options.pop("attention_backend", None)
+                options.pop("inference_backend", None)
+                options.pop("cuda_graphs", None)
                 options["memory_layers"] = tuple(options["memory_layers"])
                 return NeuralMemory(hidden_size, TitansConfig(**options))
 

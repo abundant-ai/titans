@@ -188,9 +188,8 @@ def test_checkpoint_defaults(tiny_model: TitansModel, tmp_path: Path, version: i
     path = model.save_pretrained(tmp_path / "checkpoint")
     metadata = json.loads((path / "titans.json").read_text())
     assert metadata["builtin_memory_configs"]["0"]["chunk_size"] == 16
-    metadata["config"]["attention_backend"] = "fa3"
-    for options in metadata["builtin_memory_configs"].values():
-        options["attention_backend"] = "fa3"
+    for options in (metadata["config"], *metadata["builtin_memory_configs"].values()):
+        options.update(attention_backend="fa3", inference_backend="sglang", cuda_graphs=True)
     if version < 4:
         metadata["format_version"] = version
         metadata.pop("builtin_memory_configs")
@@ -206,6 +205,7 @@ def test_checkpoint_defaults(tiny_model: TitansModel, tmp_path: Path, version: i
     for cls in (ContinualModel, TitansModel):
         restored = cls.load_pretrained(path)
         assert restored.config.attention_backend == restored.memories["0"].config.attention_backend == "sdpa"
+        assert restored.config.inference_backend == restored.memories["0"].config.inference_backend == "torch"
         assert restored.config.mac_segment_length == (512 if version == 4 else 1)
         assert restored.memories["0"].config.chunk_size == {1: 1, 2: 7, 3: 1, 4: 16}[version]
     override = replace(tiny_model.config, mac_segment_length=37, attention_backend="sdpa")
@@ -251,9 +251,12 @@ def test_sdpa_default_and_auto_alias() -> None:
     """Both constructors accept the old automatic setting and default to SDPA."""
     for cls in (RuntimeConfig, TitansConfig):
         assert cls().attention_backend == "sdpa"
-        cls(attention_backend="auto")
+        cls(attention_backend="auto", inference_backend="auto", cuda_graphs=True)
+        with pytest.raises(ValueError, match="locally"):
+            cls(inference_backend="sglang")
         with pytest.raises(ValueError, match="PyTorch SDPA"):
             cls(attention_backend="fa3")
+    assert TitansConfig((0,), 512, 4, True, 256, "torch", "sdpa", False, True, 73).memory_dim == 73
 
 
 def test_generic_checkpoint_records_effective_chunk(tiny_model: TitansModel, tmp_path: Path) -> None:

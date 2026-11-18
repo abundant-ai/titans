@@ -63,7 +63,7 @@ prepared `TrainingEpisode` objects.
    `activation_checkpointing=True`. Supply enough prepared episodes to consume
    the budget; `fit` stops when the input ends and does not repeat it automatically.
    Each output directory must be new. Training uses PyTorch autograd and Liger.
-   Training and inference both use SDPA. The residual connection also supports SGLang and decode CUDA graphs.
+   Training and inference both use local PyTorch SDPA.
 4. Begin with short fact-to-question gaps that fit inside an autograd unroll,
    then include longer streams and distractor gaps. Stream state carries across
    unrolls, but gradients stop at each `sequence_length` boundary. A longer input

@@ -1,199 +1,66 @@
 # GPU runtime
 
-The new default is causal MAC on the local PyTorch runtime. The SGLang/CUDA-graph
-path described below requires explicit `connection_factory=residual_connection`.
-Historical benchmark scripts select that connection to preserve their workload.
-See [architecture contracts](architecture.md) for details.
-
-This guide describes the existing Titans-specific accelerator path. Generic
-methods and explicit QA feedback use the local PyTorch runtime. Historical H100
-measurements predate the protocol refactor and have not been re-run for it.
-
-`Qwen/Qwen2.5-1.5B-Instruct` is the default backbone for examples and benchmarks.
-It is the only supported pretrained start. The scratch Llama configuration and
-joint training are described in [pretraining](pretraining.md). Older SmolLM2
-measurements below are historical; that backbone is no longer selectable.
-
-Qwen's Q/K/V projection biases and grouped KV heads are preserved in both eager
-and compiled paths. Its smaller KV cache does not by itself establish a speedup;
-the benchmark measures the complete Titans serving path.
-
-Both backbones use the library's document/question wrappers in training and
-inference. The library does not apply their native chat templates. Post-training
-should use these same wrappers; this integration does not claim unchanged
-out-of-the-box instruction-following quality.
-
-The CUDA environment pins PyTorch 2.9.1, Transformers 4.57.1, SGLang 0.5.7 and
-Liger Kernel 0.6.4. Install on Linux with `uv sync --extra gpu`. The Modal runner
-uses the official `lmsysorg/sglang:v0.5.7` image and adds Liger and pytest.
+Training, document ingestion and answering use one PyTorch model on one device.
+Install the Linux GPU dependencies from the repository root with `uv sync --extra gpu`.
+The GPU extra adds Liger Kernel 0.6.4 to the base PyTorch 2.9.1 and Transformers 4.57.1 installation.
 
 ```python
 import torch
-from titans import TitansConfig, TitansModel, residual_connection
+from titans import Document, Question, TitansModel
 
-model = TitansModel.from_pretrained(
-    "Qwen/Qwen2.5-1.5B-Instruct",
-    TitansConfig(
-        memory_layers=(0, 6, 12, 18),
-        memory_dim=64,
-        memory_hidden_dim=128,
-        chunk_size=32,
-        prefill_chunk_size=256,
-        inference_backend="sglang",
-        compile_kernels=True,
-        use_liger=True,
-        cuda_graphs=True,
-    ),
-    connection_factory=residual_connection,
-    device="cuda",
-    dtype=torch.bfloat16,
-)
-# Call fit, ingest, answer and clone_state through the same public class.
-# Release the local serving processes and their state when finished:
-model.close()
+model = TitansModel.from_pretrained(device="cuda", dtype=torch.bfloat16)
+state = model.ingest(Document("arrival", "The archive moved to room nine."))
+answer = model.answer(Question("room", "Where is the archive?"), state)
 ```
 
-## JIT and training kernels
+This loads the fixed Qwen2.5-1.5B-Instruct backbone with newly initialized Titans memory.
+Scratch Llama training uses the same runtime. Use the library's document and question
+wrappers during post-training so the input format matches inference. See [pretraining](pretraining.md).
 
-`compile_kernels=True` is the default. Tensor-only kernels use
-[`torch.compile(fullgraph=True)`](https://docs.pytorch.org/docs/2.9/generated/torch.compile.html),
-including the memory update, memory projections, retrieval and output gate.
-The CPU path also compiles attention, RMSNorm and the host MLP.
-CUDA attention uses native fused kernels and Liger RoPE: compiling the complete
-SDPA wrapper produced nonfinite Qwen gradients in PyTorch 2.9.1, even with Liger
-disabled. Memory kernels remain compiled on CUDA. Full-graph capture
-rejects unsupported graph breaks. CPU development can set `compile_kernels=False`
-to avoid compilation startup costs.
+## Attention and state
 
-The two biased memory-projection kernels disable Inductor's shape-padding pass.
-[SGLang 0.5.7's deterministic `addmm` replacement](https://github.com/sgl-project/sglang/blob/v0.5.7/python/sglang/srt/batch_invariant_ops/batch_invariant_ops.py)
-does not accept the `alpha`/`beta` keywords used by that pass's benchmark. This
-otherwise prevents Qwen-width memory from compiling in the serving worker.
-Full-graph JIT remains enabled, and a CUDA regression test covers the affected
-Qwen dimensions under SGLang's deterministic mode.
+All connections use PyTorch scaled dot-product attention. Each ordinary decoder query
+can see the causal persistent prefix and up to `attention_window` real tokens, including
+itself. MAC uses the interleaved retrieval and token positions of its current segment.
+An explicit mask uses the stored key positions so a short query block can attend to the
+correct part of a longer cache. Qwen retains its Q/K/V projection biases and grouped KV heads.
 
-On CUDA, Liger supplies RMSNorm, RoPE, SwiGLU and the fused linear cross-entropy loss.
-The fused loss avoids materializing the full token-by-vocabulary logit matrix
-during training. The hand-derived memory gradients remain in the compiled
-Titans kernel. `activation_checkpointing=True` recomputes host MLP activations
-during backward to reduce saved-activation memory.
+Each stream owns its KV cache, fast weights, momentum, convolution history and pending
+writes. `answer` generates on a copy. The next document continues from the original
+state. Historical checkpoints load into the local runtime and retain their saved
+memory configuration, connection and segment behavior. Current checkpoints include the
+rotary frequencies used by the backbone so a BF16 checkpoint round trip preserves them.
 
-`cuda_graphs=True` enables the Titans worker's graph runner for single-token
-decoding once the attention window is full. It captures each pending-write phase
-separately, including the chunk-commit update. Read-only answers use separate
-graphs. RoPE positions remain GPU inputs, so replay advances absolute positions.
-Prefill and shorter caches use the ordinary compiled-kernel path.
+## Compilation and precision
 
-Graphs share a workspace and allocator pool. Copies back into persistent buffers
-happen inside the graph. Before switching streams or returning to prefill, the
-runner gives the old stream independent storage. This ownership rule preserves
-clones and source states when a different request reuses the graph. Capture is
-lazy; the first request to visit a phase pays its warmup and capture cost. See
-[PyTorch's CUDA graph semantics](https://docs.pytorch.org/docs/2.9/notes/cuda.html#cuda-graphs).
+`compile_kernels=True` compiles tensor operations with PyTorch Inductor, including the
+memory projections, retrieval, write update and output gate. On CPU it also compiles
+the backbone attention, RMSNorm and MLP paths. On CUDA, PyTorch dispatches SDPA
+directly. The CUDA training loop excludes cuDNN SDPA because its backward pass
+produced nonfinite gradients on pretrained Qwen with the prefix and sliding-window mask.
 
-## SGLang state handling
+`use_liger=True` enables CUDA RMSNorm, rotary embeddings, SwiGLU and fused linear
+cross-entropy. The fused loss avoids allocating a dense vocabulary projection for
+every supervised token. Set `use_liger=False` to run those operations in PyTorch.
+Set `compile_kernels=False` to run the tensor operations eagerly.
+On supported CUDA devices, standard training uses BF16 autocast and FP32 for
+the memory-update arithmetic. Activation checkpointing can recompute the host MLP
+during backward. See [PyTorch compilation](https://docs.pytorch.org/docs/2.9/generated/torch.compile.html).
 
-The external `TitansForCausalLM` model runs inside a local SGLang engine. SGLang
-schedules requests and samples tokens. Its worker owns each stream's fast weights,
-momentum, unfinished write chunk and bounded attention KV. Ingestion appends to
-that state; answering creates a disposable branch; cloning copies the full state.
-Document history is not replayed with each question.
+## Verification and measurement
 
-This adapter currently allows one active request and one GPU. Native radix-prefix
-sharing, native SGLang CUDA graphs, speculative decoding and overlapping scheduling are disabled
-because their state handling has not been extended to include Titans memory.
-The separate Titans graph runner includes the complete memory state.
-Those limits matter for throughput comparisons with an ordinary SGLang model.
-The client retains its training model while the worker loads an inference copy;
-both copies occupy GPU memory. `fit` shuts down a running inference worker first,
-then a subsequent inference call exports the updated weights and starts a new one.
-
-The engine is an internal trusted client, not a public HTTP server. Custom request
-metadata is transported through SGLang's custom-logit-processor interface. The
-processor leaves logits unchanged. Requests carry state IDs and policies, while
-tensor state remains in the worker. Deterministic SGLang inference enables the
-request's sampling seed; repeated requests with the same state and seed are checked
-on the H100. This flag also selects SGLang's batch-invariant kernels.
-
-## Attention
-
-Every Titans layer uses PyTorch scaled dot-product attention for training, prefill
-and decoding. Each query can attend to earlier persistent prefix positions and
-the current position. In ordinary layers it can also attend to the preceding
-`attention_window - 1` real tokens. MAC uses causal attention over the interleaved
-retrieval and token positions in the current segment. Cached blocks use an explicit
-mask based on the stored key positions, including when the query and cache lengths differ.
-
-`attention_backend="sdpa"` is the default. Existing callers can still pass `"auto"`.
-Loading a checkpoint uses SDPA regardless of which attention backend saved it.
-New checkpoints store the backbone's rotary frequencies so a BF16 round trip preserves the same positions and phases.
-CUDA training excludes cuDNN SDPA because its backward pass produced nonfinite
-gradients on pretrained Qwen with the prefix and sliding-window mask.
-
-The residual SGLang adapter computes the same SDPA in its model worker.
-SGLang 0.5.7 requires a separate engine backend for deterministic sampling.
-The adapter selects `triton` for that setting and owns the attention computation and KV cache.
-
-## Reproduce the measurements
+The [manual GPU checks](../checks/README.md) cover inference and fixed-input gradients.
+Run the native inference benchmark on an H100 with the pretrained weights available:
 
 ```bash
-uv run pytest -q
-uv run python -m benchmarks.memory_update --device cuda --output validation/memory_h100.json
 uv run python -m benchmarks.h100 --output validation/h100_qwen_inference.json
-uv run python -m benchmarks.posttraining --output validation/h100_qwen_posttraining.json
 ```
 
-For the configured Modal account, the task runner uploads only the package, tests
-and benchmark scripts and uses one H100 per job:
+It warms up the model and synchronizes the GPU before recording latency. It measures
+document ingestion, time to first token, and generation through the public API.
+The report includes the actual number of tokens generated up to the 128-token cap.
+Pass `--profile` for an additional fixed-token decode profile.
 
-```bash
-uv run --with modal modal run --env testing benchmarks/modal_h100.py --run-benchmark
-```
-
-Both standalone benchmarks use Qwen2.5-1.5B-Instruct.
-The Modal `--run-benchmark` command writes `validation/h100_qwen_inference.json`.
-
-Compilation and engine startup are recorded separately. Timed requests run after
-warmup. The report includes actual GPU identity, package versions, parameter
-counts, document token count, raw latency samples, ingestion tokens/second,
-time to first token, and generation speed. Decode-only throughput is an estimate
-from matched 128-token and one-token requests; the report also includes the direct
-end-to-end 128-token rate. The adapters are untrained for this speed test.
-
-
-To compare both backbones on the same physical H100, including real post-training:
-
-```bash
-uv run --with modal modal run --env testing benchmarks/modal_h100.py --compare
-```
-
-The comparison writes `validation/h100_comparison.json`. It runs each measurement
-in a fresh process on the same GPU. Inference uses the same document text,
-question and 128-token output limit, with five repetitions after warmup. Token
-counts can differ between tokenizers; character throughput is also recorded.
-Post-training uses identical text and exact token budgets: 8,192 warmup tokens,
-then 32,768 measured tokens, with four AdamW steps. The frozen-backbone LM objective
-uses 2,048-token backpropagation windows, 8,192 tokens per step, activation
-checkpointing and Liger's fused loss. Warmup, training and checkpoint times are
-recorded separately. This synthetic workload measures execution speed; it does
-not evaluate the proposed mixed document/QA training recipe.
-
-
-## Ad hoc inference checks on Modal
-
-```bash
-uvx modal run --env testing checks/modal_inference.py --output validation/gpu_inference.json
-```
-
-This manually invoked job requests one L4 with a 30-minute execution limit.
-It runs portable checks from `checks/gpu_inference.py`: kernel output parity,
-compiled memory transitions, both methods' streaming and answer isolation, and
-untrained checkpoint restoration. Add `--hopper` to include CUDA graph state equivalence on one H200. No post-training, QA feedback update, backward
-pass or optimizer step runs. Titans' analytic test-time memory transition remains
-part of document ingestion; shared parameters remain unchanged.
-
-The file is outside default pytest discovery and has no CI workflow. The report
-records package versions, GPU identity, test output and SHA-256 hashes of the
-uploaded sources. Small randomly initialized HF backbones establish execution
-correctness only. The separate historical `--compare` benchmark above includes
-post-training and is not invoked by this check.
+`benchmarks.posttraining` separately measures real optimizer steps when explicitly
+invoked. Benchmarks in this checkout use MAC. Archived throughput measurements in
+[validation](../validation/README.md) describe the runtime and connection recorded in each report.

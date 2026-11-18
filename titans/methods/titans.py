@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Self
 
 import torch
 from torch import Tensor, nn
@@ -28,7 +28,7 @@ from titans.core.protocols import (
 from titans.core.protocols import MemoryState as StateProtocol
 from titans.core.types import RuntimeConfig
 from titans.runtime.backbones import PRETRAINED_BACKBONE
-from titans.runtime.connections import ResidualConnection, residual_connection
+from titans.runtime.connections import ResidualConnection
 from titans.runtime.model import ContinualModel
 
 if TYPE_CHECKING:
@@ -52,7 +52,6 @@ class TitansConfig(RuntimeConfig):
     conv_kernel: int = 3
     max_inner_learning_rate: float = 0.01
     gate_bias: float = -4.0
-    inference_backend: Literal["auto", "torch", "sglang"] = "auto"
     use_liger: bool = True
 
     def __post_init__(self) -> None:
@@ -618,7 +617,6 @@ class TitansArchitecture:
 class TitansModel(ContinualModel):
     """Convenience constructor for the Titans method on the fixed runtime."""
 
-    supports_sglang = True
 
     _config_type = TitansConfig
 
@@ -641,12 +639,9 @@ class TitansModel(ContinualModel):
         """
         if memory_factory is not None and memory_architecture is not None:
             raise ValueError("Supply one memory architecture factory")
-        chosen_connection = connection_factory or titans_mac_connection
         super().__init__(backbone, tokenizer, config,
                          memory_architecture=memory_architecture or memory_factory or TitansArchitecture(config),
-                         connection_factory=chosen_connection)
-        self.supports_sglang = (chosen_connection is residual_connection
-                               and all(type(m) is NeuralMemory for m in self.memories.values()))
+                         connection_factory=connection_factory or titans_mac_connection)
 
     @classmethod
     def from_scratch(

@@ -1,8 +1,6 @@
 """JIT-compiled tensor kernels; Python stream ownership stays outside the graphs.
 
-Inductor fuses pointwise work and generates device-specific code. Full-graph
-compilation makes a graph break an error. CUDA graphs are deliberately disabled:
-their output-buffer reuse needs separate validation for persistent stream state.
+Inductor compiles the tensor operations. The runtime owns each stream's mutable state.
 """
 
 import torch
@@ -49,11 +47,7 @@ def compiled_read(weights: tuple[Tensor, ...], queries: Tensor) -> Tensor:
     return mlp(weights, queries)
 
 
-
-
-# SGLang 0.5.7 deterministic addmm omits alpha/beta keyword support.
-# Inductor padding benchmarks pass those keywords; retain JIT without padding.
-@torch.compile(fullgraph=True, dynamic=True, options={"shape_padding": False})
+@torch.compile(fullgraph=True, dynamic=True)
 def compiled_project_tokens(
     hidden: Tensor, tail: Tensor, qkv_weight: Tensor, conv_weight: Tensor, conv_bias: Tensor,
     gate_weight: Tensor, gate_bias: Tensor, max_learning_rate: float,
@@ -77,9 +71,7 @@ def compiled_project_tokens(
                           gate_weight, gate_bias, max_learning_rate)
 
 
-
-
-@torch.compile(fullgraph=True, dynamic=True, options={"shape_padding": False})
+@torch.compile(fullgraph=True, dynamic=True)
 def compiled_combine_read(
     reads: Tensor, hidden: Tensor, norm_weight: Tensor, norm_bias: Tensor,
     output_weight: Tensor, gate_weight: Tensor, gate_bias: Tensor, norm_eps: float,

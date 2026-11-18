@@ -169,11 +169,9 @@ def learn(
         Normalized loss, forwarded feedback tokens and update accounting.
 
     Raises:
-        ValueError: The state is invalid, feedback is empty or remote state was supplied.
+        ValueError: The state is invalid or feedback is empty.
     """
     model._validate_state(state)
-    if state._remote_id is not None:
-        raise ValueError("Explicit learning requires a local torch stream")
     prompt, targets = feedback_tokens(model, question, target_answer)
     previous_grad_flags = tuple(p.requires_grad for p in model.backbone.parameters())
     model.backbone.requires_grad_(train_backbone)
@@ -228,7 +226,6 @@ def learn(
                 state._valid = False
                 raise
             if changed.shared_changed:
-                model.close()
                 model._revision += 1
             state._memory = working._memory
             state._revision = model._revision

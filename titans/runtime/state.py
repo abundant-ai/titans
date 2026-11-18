@@ -51,7 +51,6 @@ class StreamState:
     _next_logits: Tensor | None = None
     _valid: bool = True
     _next_hidden: Tensor | None = None
-    _remote_id: str | None = None
 
     _retrieval: dict[int, MemoryState] = field(default_factory=dict)
     _boundary_prediction: bool = False
@@ -80,8 +79,6 @@ class StreamState:
         Returns:
             An independent state, including pending writes and cached logits.
         """
-        if self._remote_id is not None:
-            raise ValueError("Remote streams must be cloned through the owning model")
         logits = self._next_logits
         if logits is not None:
             logits = logits.detach().clone() if detach else logits.clone()

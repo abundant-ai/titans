@@ -12,7 +12,6 @@ import torch
 
 from benchmarks.h100 import BASE_MODEL, source_digest
 from titans import Document, TitansConfig, TitansModel, TrainingConfig, TrainingEpisode
-from titans.runtime.connections import residual_connection
 
 
 class TimedTitansModel(TitansModel):
@@ -49,11 +48,8 @@ def main() -> None:
     if "H100" not in torch.cuda.get_device_name():
         raise RuntimeError("This benchmark explicitly requires an H100")
     config = TitansConfig(memory_dim=64, memory_hidden_dim=128, memory_layers=(0, 6, 12, 18),
-                          chunk_size=32, prefill_chunk_size=256, attention_window=512,
-                          persistent_tokens=4, inference_backend="sglang",
                           compile_kernels=True, use_liger=True)
-    model = TimedTitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16,
-                                              connection_factory=residual_connection)
+    model = TimedTitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16)
     assert isinstance(model, TimedTitansModel)
     # Identical source text; exact token budgets compensate for tokenizer differences.
     episode = TrainingEpisode("archive", (Document("batch", (
@@ -110,7 +106,6 @@ def main() -> None:
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    model.close()
 
 
 if __name__ == "__main__":

@@ -5,10 +5,11 @@ from pathlib import Path
 
 import modal
 
+from checks.modal_image import gpu_image
+
 app = modal.App("titans-joint-pretraining-check")
 image = (
-    modal.Image.from_registry("lmsysorg/sglang:v0.5.7")
-    .pip_install("liger-kernel==0.6.4", "transformers==4.57.1", "sentencepiece>=0.2")
+    gpu_image
     .env({"PYTHONPATH": "/workspace", "TOKENIZERS_PARALLELISM": "false",
           "HF_HOME": "/cache/huggingface", "TORCHINDUCTOR_CACHE_DIR": "/cache/inductor"})
     .add_local_dir("titans", "/workspace/titans")
@@ -17,7 +18,7 @@ image = (
 cache = modal.Volume.from_name("titans-verification-cache", create_if_missing=True)
 
 
-@app.function(image=image, gpu="H100", cpu=4, memory=16384, timeout=1800, startup_timeout=300,
+@app.function(image=image, gpu="H100!", cpu=4, memory=16384, timeout=1800, startup_timeout=300,
               max_containers=1, volumes={"/cache": cache})
 def verify() -> dict[str, object]:
     """Run bounded full-size inference and gradient comparisons on one H100.

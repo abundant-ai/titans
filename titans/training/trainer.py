@@ -258,7 +258,6 @@ def fit_model(
         raise ValueError("Explicit update rules require document_qa supervision routing")
     if callable(episodes):
         episodes = episodes(config.seed)
-    model.close()
     started = time.perf_counter()
     was_training = model.training
     was_checkpointing = model._checkpoint_backbone

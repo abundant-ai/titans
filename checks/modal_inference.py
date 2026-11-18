@@ -5,10 +5,11 @@ from pathlib import Path
 
 import modal
 
+from checks.modal_image import gpu_image
+
 app = modal.App("titans-inference-check")
 image = (
-    modal.Image.from_registry("lmsysorg/sglang:v0.5.7")
-    .pip_install("liger-kernel==0.6.4", "pytest>=8.3,<10")
+    gpu_image
     .env({"TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor", "TOKENIZERS_PARALLELISM": "false",
           "PYTHONPATH": "/workspace"})
     .add_local_dir("titans", "/workspace/titans")
@@ -18,11 +19,10 @@ image = (
 )
 
 
-def run_checks(hopper: bool) -> dict[str, object]:
-    """Execute the selected inference checks, without invoking training.
-
-    Args:
-        hopper: Include the CUDA graph replay checks on the larger GPU.
+@app.function(image=image, gpu="L4", cpu=4, memory=16384, timeout=1800,
+              max_containers=1, scaledown_window=30)
+def verify_inference() -> dict[str, object]:
+    """Run the native inference checks and collect their device and source metadata.
 
     Returns:
         Device identity, package versions, source hashes, test counts and full output.
@@ -48,8 +48,6 @@ def run_checks(hopper: bool) -> dict[str, object]:
     junit = Path("/tmp/inference-checks.xml")
     command = [sys.executable, "-m", "pytest", "/workspace/checks/gpu_inference.py",
                "-vv", "--tb=short", "--show-capture=no", f"--junitxml={junit}"]
-    if not hopper:
-        command += ["-k", "not cuda_graphs"]
     started = time.perf_counter()
     lines: list[str] = []
     with subprocess.Popen(command, cwd="/workspace", stdout=subprocess.PIPE,
@@ -65,8 +63,7 @@ def run_checks(hopper: bool) -> dict[str, object]:
     skipped = sum(case.find("skipped") is not None for case in cases)
     return {
         "mode": "inference_only", "device": device, "torch": str(torch.__version__),
-        "scope": "hopper_inference" if hopper else "portable_inference",
-        "cuda": str(torch.version.cuda), "sglang": importlib.metadata.version("sglang"),
+        "cuda": str(torch.version.cuda),
         "transformers": importlib.metadata.version("transformers"),
         "liger_kernel": importlib.metadata.version("liger-kernel"),
         "elapsed_seconds": time.perf_counter() - started, "returncode": returncode,
@@ -76,40 +73,19 @@ def run_checks(hopper: bool) -> dict[str, object]:
     }
 
 
-@app.function(image=image, gpu="L4", cpu=2, memory=16384, timeout=1800,
-              max_containers=1, scaledown_window=30)
-def verify_inference() -> dict[str, object]:
-    """Run portable inference checks on one L4.
-
-    Returns:
-        The evidence report for portable inference checks.
-    """
-    return run_checks(hopper=False)
-
-
-@app.function(image=image, gpu="H200", cpu=4, memory=16384, timeout=1800,
-              max_containers=1, scaledown_window=30)
-def verify_hopper() -> dict[str, object]:
-    """Run all inference checks, including SDPA CUDA graph replay, on one H200.
-
-    Returns:
-        The evidence report for the full inference suite.
-    """
-    return run_checks(hopper=True)
-
-
 @app.local_entrypoint()
 def main(output: str = "validation/gpu_inference.json", hopper: bool = False) -> None:
     """Invoke the manual GPU check and save its actual evidence locally.
 
     Args:
         output: Local report path; no model or trained checkpoint is produced.
-        hopper: Include graph replay on H200. The portable suite runs on L4.
+        hopper: Run the same suite on a Hopper H100 instead of an L4.
 
     Raises:
         RuntimeError: A check failed or was skipped on the allocated GPU.
     """
-    result = verify_hopper.remote() if hopper else verify_inference.remote()
+    check = verify_inference.with_options(gpu="H100!") if hopper else verify_inference
+    result = check.remote()
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(result, indent=2) + "\n")

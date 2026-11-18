@@ -1,6 +1,6 @@
 # Validation record
 
-The reports below describe the revisions that produced them. Measurements with the former attention backend predate the switch to SDPA for inference.
+The reports below describe the revisions that produced them. The serving-engine and CUDA graph measurements are historical. Current training and inference run locally in PyTorch.
 
 ## Joint pretraining
 

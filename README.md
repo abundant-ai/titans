@@ -24,6 +24,8 @@ uv sync
 pip install -e .
 ```
 
+On Linux with CUDA, run `uv sync --extra gpu` to install Liger. Training and inference use local PyTorch SDPA and `torch.compile`.
+
 ## Fixed runtime and replaceable policies
 
 | Boundary | Contract |
@@ -48,8 +50,7 @@ titans/
   methods/
     titans.py # Titans architecture, transition, MAC/MAG and convenience model
   training/   # Post-training loop, objectives and feedback update policies
-  optim/      # Compiled kernels, GPU operations and CUDA graph decoding
-  serving/    # Request registry, SGLang backend and model discovery
+  optim/      # PyTorch compiled kernels and optional Liger CUDA operations
 tests/
   support/    # Shared offline fixtures and independent numerical oracle
 checks/       # Manual inference-only GPU checks, outside CI
@@ -60,9 +61,7 @@ docs/         # Contracts, architecture and runtime guides
 
 Public imports such as `from titans import ContinualModel, TitansModel` stay the
 same. Internal modules use the package paths above. Checkpoint loading accepts
-the previous built-in connection paths as well as the current ones. SGLang model
-discovery uses `titans.serving.models`; its optional dependencies are loaded only
-when the serving backend is requested.
+the previous built-in connection paths as well as the current ones.
 
 ## Start from scratch
 
@@ -212,18 +211,12 @@ GPU checks are ad hoc and excluded from default pytest discovery and CI. Launch
 the inference-only check manually from this checkout:
 
 ```bash
-uvx modal run --env testing checks/modal_inference.py --output validation/gpu_inference.json
+uvx modal run --env testing -m checks.modal_inference --output validation/gpu_inference.json
 ```
 
 This uses one L4 for portable kernel parity, streaming, isolated answers and
-checkpoint restoration. Add `--hopper` to include CUDA graph checks on
-one H200. It runs no post-training, QA feedback updates or optimizer steps.
+checkpoint restoration. Add `--hopper` to run the same suite on one H100. It runs no post-training, QA feedback updates or optimizer steps.
 See [the manual checks](checks/README.md) for the exact scope.
-
-The generic plugin and explicit feedback paths use the local PyTorch runtime.
-The existing SGLang/CUDA-graph adapter supports Titans with `residual_connection`. Use
-`inference_backend="torch"` for explicit streams and feedback. Custom methods do
-not automatically inherit the specialized serving adapter.
 
 See [GPU runtime](docs/gpu_runtime.md), [paper alignment](docs/paper_alignment.md),
 and [earlier pilot notes](docs/pilot_notes.md). Historical H100 measurements in

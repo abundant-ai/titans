@@ -52,10 +52,10 @@ class RuntimeConfig:
     persistent_tokens: int = 4
     compile_kernels: bool = True
     prefill_chunk_size: int = 256
-    inference_backend: Literal["auto", "torch", "sglang"] = "torch"
+    inference_backend: Literal["auto", "torch"] = "torch"
     attention_backend: Literal["sdpa", "auto"] = "sdpa"
     use_liger: bool = False
-    cuda_graphs: bool = True
+    cuda_graphs: bool = field(default=False, repr=False, compare=False)  # Legacy constructor slot; ignored.
     mac_segment_length: int = field(default=512, kw_only=True)
 
     def __post_init__(self) -> None:
@@ -68,8 +68,8 @@ class RuntimeConfig:
             raise ValueError("At least one nonnegative memory layer is required")
         if len(set(self.memory_layers)) != len(self.memory_layers):
             raise ValueError("memory_layers must contain unique indices")
-        if self.inference_backend not in ("auto", "torch", "sglang"):
-            raise ValueError("Unknown inference backend")
+        if self.inference_backend not in ("auto", "torch"):
+            raise ValueError("Inference runs locally. Use inference_backend='torch' or 'auto'.")
         if self.attention_backend not in ("sdpa", "auto"):
             raise ValueError("Titans uses PyTorch SDPA. Set attention_backend to 'sdpa' or 'auto'.")
 

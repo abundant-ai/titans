@@ -11,34 +11,36 @@ from examples.linear_memory import LinearMemory
 from tests.support.memory import case
 from titans import (
     AnswerConfig,
+    ConnectionFactory,
     ContinualModel,
     Document,
     Question,
     RuntimeConfig,
     TitansConfig,
     TitansModel,
+    residual_connection,
     titans,
+    titans_mac_connection,
 )
-from titans.methods.titans import chunk_update
-from titans.optim.cuda_graphs import GraphDecoder
+from titans.methods.titans import NeuralMemory, chunk_update
 from titans.optim.gpu_ops import liger_norm, liger_rotary
 from titans.optim.kernels import compiled_chunk_update
-from titans.runtime.connections import residual_connection
-from titans.runtime.state import StreamState
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires a CUDA GPU")
 
 
+@pytest.mark.parametrize("connection", [titans_mac_connection, residual_connection], ids=["mac", "residual"])
 @pytest.mark.parametrize("method", ["titans", "linear"])
 @torch.no_grad()
 def test_generic_cuda_inference_and_restore(
-    tiny_model: TitansModel, method: str, tmp_path: Path,
+    tiny_model: TitansModel, method: str, connection: ConnectionFactory, tmp_path: Path,
 ) -> None:
     """Exercise both method protocols with streaming, isolated QA and checkpoint restore.
 
     Args:
         tiny_model: Offline Llama/Qwen architecture and tokenizer fixture.
         method: Titans or a structurally independent linear memory method.
+        connection: Built-in wiring used by both the original and restored stream.
         tmp_path: Temporary directory for an untrained checkpoint round trip.
     """
     backbone = type(tiny_model.backbone)(type(tiny_model.backbone.config)(
@@ -49,7 +51,8 @@ def test_generic_cuda_inference_and_restore(
                              compile_kernels=False, use_liger=True, prefill_chunk_size=16)
     factory = (titans(TitansConfig(memory_dim=8, memory_hidden_dim=16, chunk_size=4,
                                   compile_kernels=False)) if method == "titans" else LinearMemory)
-    model = ContinualModel(backbone, tiny_model.tokenizer, settings, memory_factory=factory)
+    model = ContinualModel(backbone, tiny_model.tokenizer, settings, memory_factory=factory,
+                           connection_factory=connection)
     parameters = [parameter.clone() for parameter in model.parameters()]
     state = model.start_stream()
     for index in range(3):
@@ -65,8 +68,9 @@ def test_generic_cuda_inference_and_restore(
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
             assert bool(torch.isfinite(actual).all().item())
     for layer, cache in state._attention.items():
-        expected_pairs = 2 * (state.tokens_processed % settings.mac_segment_length)
-        assert cache.keys.shape[2] == settings.persistent_tokens + expected_pairs
+        retained = (2 * (state.tokens_processed % settings.mac_segment_length)
+                    if connection is titans_mac_connection else settings.attention_window - 1)
+        assert cache.keys.shape[2] == settings.persistent_tokens + retained
         torch.testing.assert_close(cache.keys, source._attention[layer].keys, rtol=0, atol=0)
     fork = model.clone_state(state)
     model.ingest(Document("new", "Alice lives in Rome"), fork)
@@ -123,93 +127,9 @@ def test_cuda_compiled_memory_matches_eager() -> None:
         torch.testing.assert_close(got, want, rtol=1e-4, atol=1e-5)
 
 
-def assert_stream_matches(actual: StreamState, expected: StreamState) -> None:
-    """Compare all mutable graph state with the ordinary numerical forward path.
-
-    Args:
-        actual: Stream advanced by CUDA graphs.
-        expected: Independently advanced reference stream.
-    """
-    assert actual._position == expected._position
-    assert actual._tokens == expected._tokens
-    assert actual._documents == expected._documents
-    for index, memory in actual._memory.items():
-        reference = expected._memory[index]
-        for first, second in zip(
-            (*memory.weights, *memory.momentum, memory.pending, memory.conv_tail),
-            (*reference.weights, *reference.momentum, reference.pending, reference.conv_tail),
-            strict=True,
-        ):
-            torch.testing.assert_close(first, second, rtol=2e-4, atol=2e-5)
-    for index, cache in actual._attention.items():
-        reference_cache = expected._attention[index]
-        torch.testing.assert_close(cache.keys, reference_cache.keys, rtol=0, atol=0)
-        torch.testing.assert_close(cache.values, reference_cache.values, rtol=0, atol=0)
-        torch.testing.assert_close(cache.positions, reference_cache.positions, rtol=0, atol=0)
-    torch.testing.assert_close(actual._next_logits, expected._next_logits, rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("prefix", [0, 2])
 @torch.no_grad()
-def test_cuda_graphs_preserve_streams_and_chunk_commits(tiny_model: TitansModel, prefix: int) -> None:
-    """Replay all write phases and read-only branches, including stream switches and fallback.
-
-    Args:
-        tiny_model: Offline tokenizer and small memory settings.
-        prefix: Number of globally visible persistent tokens.
-    """
-    torch.compiler.reset()
-    backbone = type(tiny_model.backbone)(type(tiny_model.backbone.config)(
-        vocab_size=128, hidden_size=256, intermediate_size=512, num_hidden_layers=2,
-        num_attention_heads=2, num_key_value_heads=1, eos_token_id=2,
-    )).to(device="cuda", dtype=torch.bfloat16)
-    config = replace(tiny_model.config, compile_kernels=True, use_liger=True,
-                     persistent_tokens=prefix, inference_backend="torch")
-    model = TitansModel(backbone, tiny_model.tokenizer, config,
-                        connection_factory=residual_connection)
-    decoder = GraphDecoder(model)
-    state = model._new_state()
-    reference = state._copy(detach=True)
-    initial = [7, 12, 5, 9, 3, 1, 10, 8, 15, 7, 6]
-    decoder.forward(torch.tensor([initial], device="cuda"), state)
-    model._forward_tokens(initial, reference, last_only=True)
-    source = state._copy(detach=True)
-    untouched = source._copy(detach=True)
-    alternate = state._copy(detach=True)
-    alternate_reference = reference._copy(detach=True)
-    for step in range(32):
-        write = step % 7 != 0
-        selected, expected = (state, reference) if step % 3 else (alternate, alternate_reference)
-        token = 7 + step % 10
-        decoder.forward(torch.tensor([[token]], device="cuda"), selected, write=write)
-        model._forward_tokens([token], expected, write=write, last_only=True)
-        assert_stream_matches(selected, expected)
-        assert_stream_matches(source, untouched)
-    # A prefill after graph replay must stop borrowing workspace storage.
-    decoder.forward(torch.tensor([[3, 8, 11]], device="cuda"), state)
-    model._forward_tokens([3, 8, 11], reference, last_only=True)
-    assert_stream_matches(state, reference)
-    assert_stream_matches(alternate, alternate_reference)
-    assert decoder.replays == 32
-    assert all((phase, True) in decoder.graphs for phase in range(config.chunk_size))
-
-
-@torch.no_grad()
-def test_qwen_memory_jit_with_sglang_determinism() -> None:
-    """Compile real Qwen-width memory under SGLang's deterministic operator replacements.
-
-    Small gate projections previously triggered Inductor's addmm padding benchmark,
-    whose alpha/beta keywords are unsupported by SGLang 0.5.7. Cover prefix,
-    prefill and decode shapes while retaining compiled kernels and seeded serving.
-    """
-    from sglang.srt.batch_invariant_ops import (
-        disable_batch_invariant_mode,
-        enable_batch_invariant_mode,
-    )
-
-    from titans import TitansConfig
-    from titans.methods.titans import NeuralMemory
-
+def test_qwen_memory_jit_matches_eager() -> None:
+    """Compare BF16 Qwen-width memory reads and committed weights across prefill and decode."""
     torch.compiler.reset()
     torch.manual_seed(38)
     settings = TitansConfig(memory_dim=64, memory_hidden_dim=128, compile_kernels=True)
@@ -221,7 +141,6 @@ def test_qwen_memory_jit_with_sglang_determinism() -> None:
     actual.mix_gate.weight.normal_(std=0.01)
     expected.load_state_dict(actual.state_dict())
     try:
-        enable_batch_invariant_mode()
         first, second = actual.initial_state(), expected.initial_state()
         for count in (4, 256, 1, 1):
             hidden = torch.randn(1, count, 1536, device="cuda", dtype=torch.bfloat16)
@@ -230,5 +149,4 @@ def test_qwen_memory_jit_with_sglang_determinism() -> None:
             for got_weight, want_weight in zip(first.weights, second.weights, strict=True):
                 torch.testing.assert_close(got_weight, want_weight, rtol=0.002, atol=0.0002)
     finally:
-        disable_batch_invariant_mode()
         torch.compiler.reset()

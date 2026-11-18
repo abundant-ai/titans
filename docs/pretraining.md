@@ -93,7 +93,7 @@ within the live window.
 ## Manual H100 validation
 
 ```bash
-uvx modal run --env testing checks/modal_pretraining.py \
+uvx modal run --env testing -m checks.modal_pretraining \
   --output validation/h100_segmented_mac.json
 ```
 

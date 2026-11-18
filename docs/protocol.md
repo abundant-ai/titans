@@ -142,9 +142,8 @@ objective/update implementation, generator seed and checkpoint revision together
 
 The default Titans path retains compiled memory kernels, Liger backbone kernels
 and fused cross-entropy, activation checkpointing, truncated backpropagation and
-token-based gradient accumulation. All connections use PyTorch SDPA. The residual connection supports SGLang and CUDA
-graphs. The generic runtime can enable its shared compile/Liger settings;
-specialized Titans serving still requires `TitansModel`.
+token-based gradient accumulation. All connections use PyTorch SDPA and share the same
+training and inference runtime.
 
 An arbitrary custom objective uses ordinary logits/loss evaluation rather than
 the fused cross-entropy shortcut. Custom checkpoint updates use their own policy
@@ -152,9 +151,7 @@ instead of the accumulated AdamW schedule. These are explicit extension choices;
 the original optimized default training path remains available.
 
 The fixed scratch Llama and pretrained Qwen2.5-1.5B-Instruct are supported on one device.
-See [pretraining](pretraining.md) for joint theta/phi updates. Generic methods and explicit feedback
-run locally in PyTorch. Remote SGLang state cannot be passed to learn; the existing
-Titans serving specialization is retained for ingestion and answering. Shared
+See [pretraining](pretraining.md) for joint theta/phi updates. Shared
 checkpoint save/load is supported; live-state and optimizer-resume serialization
 are not yet provided. No held-out continual-learning quality claim follows from
 the protocol tests alone.

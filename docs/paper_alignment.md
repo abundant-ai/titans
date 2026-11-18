@@ -84,9 +84,8 @@ The CPU suite compares depths 1–3, ordinary and extreme gates, nonzero momentu
 outer derivatives, causality, arbitrary input splits, deep cloning, training
 budgets and checkpoint round trips. Compiled kernels are checked separately
 against the same autograd oracle. A CPU test compares cached SDPA outputs and gradients with an explicit per-query
-softmax over the visible keys. GPU checks compare Liger losses and gradients with PyTorch. CUDA graph checks
-compare logits, caches, fast weights, momentum, pending writes and convolution
-history with the ordinary forward path across commits and stream switches.
+softmax over the visible keys. GPU checks compare Liger losses and gradients with PyTorch. The streaming tests cover
+state isolation and the write and segment boundaries.
 
 These checks establish numerical and API contracts for the tested configurations.
 They do not establish learned long-document recall. That requires post-training

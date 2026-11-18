@@ -102,11 +102,8 @@ convolution read can change historical MAC predictions. Custom connections requi
 loading. A checkpoint never imports arbitrary code from its metadata.
 
 Compiled memory kernels, Liger, activation checkpointing, gradient accumulation
-and truncation remain available. SGLang and the existing optimized CUDA graph
-serving adapter support the residual Titans connection. Select it explicitly for
-that path. MAC and custom connections use the local PyTorch runtime; they do not
-silently dispatch through an incompatible serving adapter. The historical
-throughput benchmarks explicitly select the residual connection.
+and truncation remain available. MAC, MAG, residual and custom connections all
+use the same PyTorch runtime for local training and inference.
 
 The original optimization audit describes commit `1cf5ad1`; its source hashes do
 not describe this architecture extension. GPU checks run manually on Modal.

@@ -5,10 +5,11 @@ from pathlib import Path
 
 import modal
 
+from checks.modal_image import gpu_image
+
 app = modal.App("titans-h100-verification")
 image = (
-    modal.Image.from_registry("lmsysorg/sglang:v0.5.7")
-    .pip_install("liger-kernel==0.6.4", "pytest>=8.3,<10")
+    gpu_image
     .env({"HF_HOME": "/cache/huggingface", "TORCHINDUCTOR_CACHE_DIR": "/cache/inductor",
           "TOKENIZERS_PARALLELISM": "false", "PYTHONPATH": "/workspace"})
     .add_local_dir("titans", "/workspace/titans")
@@ -34,7 +35,7 @@ def inspect_runtime() -> dict[str, str]:
 
     return {
         "gpu": torch.cuda.get_device_name(), "torch": str(torch.__version__),
-        "cuda": str(torch.version.cuda), "sglang": importlib.metadata.version("sglang"),
+        "cuda": str(torch.version.cuda),
         "liger_kernel": importlib.metadata.version("liger-kernel"),
     }
 
@@ -42,7 +43,7 @@ def inspect_runtime() -> dict[str, str]:
 @app.function(image=image, gpu="H100!", cpu=8, memory=32768, timeout=1800,
               max_containers=1, scaledown_window=30, volumes={"/cache": cache})
 def benchmark() -> str:
-    """Run CUDA equivalence tests before collecting the real SGLang throughput report.
+    """Run CUDA equivalence tests before collecting native inference throughput.
 
     Returns:
         JSON containing measurements from the allocated H100.
@@ -63,7 +64,7 @@ def benchmark() -> str:
 def compare_backbones() -> str:
     """Benchmark the supported Qwen model on one physical H100.
 
-    Each measurement has a fresh process to release worker memory and isolate
+    Each measurement has a fresh process to release device memory and isolate
     compiler specializations. Model downloads and compilation are outside steady timings.
 
     Returns:

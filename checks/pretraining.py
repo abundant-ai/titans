@@ -28,7 +28,7 @@ def run_pretraining_checks() -> dict[str, object]:
     torch.manual_seed(17)
     torch.backends.cuda.matmul.allow_tf32 = False
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(WordLevel({"x": 0})))
-    config = TitansConfig(compile_kernels=False, use_liger=False, inference_backend="torch")
+    config = TitansConfig(compile_kernels=False, use_liger=False)
     with torch.device("cuda"):
         model = TitansModel(LlamaForCausalLM(scratch_config()), tokenizer, config)
     ids = list(range(17, 50))
