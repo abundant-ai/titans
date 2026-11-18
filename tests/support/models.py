@@ -17,15 +17,28 @@ from titans import TitansConfig, TitansModel, residual_connection
 
 
 @pytest.fixture(params=["llama", "qwen2"])
-def tiny_model(request: pytest.FixtureRequest) -> TitansModel:
+def tiny_model(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> TitansModel:
     """Build both supported architectures with a deterministic local tokenizer.
 
     Args:
         request: Architecture parameter supplied by pytest.
+        monkeypatch: Permit small offline decoders only inside tests.
 
     Returns:
         A real HF backbone integration with random weights and two memory branches.
     """
+    def test_backbone_kind(config: LlamaConfig | Qwen2Config) -> str:
+        """Keep offline fixtures in frozen-backbone mode.
+
+        Args:
+            config: Small test-only decoder configuration.
+
+        Returns:
+            The pretrained training policy for existing regression tests.
+        """
+        return "qwen"
+
+    monkeypatch.setattr("titans.runtime.model.validate_backbone", test_backbone_kind)
     torch.set_num_threads(1)
     torch.manual_seed(12)
     words = ["[PAD]", "[UNK]", "[EOS]", "Document", ":", "Question", "Answer",

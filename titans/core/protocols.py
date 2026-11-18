@@ -206,6 +206,7 @@ class LossContext:
     state: "StreamState"
     shared_parameters: tuple[nn.Parameter, ...]
     phase: Literal["document", "answer"]
+    backbone_parameters: tuple[nn.Parameter, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -250,13 +251,15 @@ class DataGenerator(Protocol):
 class UpdateContext:
     """Normalized loss and permitted update targets for an explicit learning step.
 
-    Shared parameters exclude the backbone. Memory entries are the adaptable
+    Shared parameters are phi; backbone_parameters exposes theta in joint mode.
+    Memory entries are the adaptable
     tensors in the pre-question state, keyed by layer and algorithm-local name.
     """
 
     loss: Tensor
     shared_parameters: tuple[nn.Parameter, ...]
     memory_parameters: Mapping[tuple[int, str], Tensor]
+    backbone_parameters: tuple[nn.Parameter, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -274,7 +277,8 @@ class UpdateRule(Protocol):
         """Update shared parameters in place and return functional memory replacements.
 
         Args:
-            context: One loss graph and all permitted phi/W targets. The backbone is absent.
+            context: One loss graph and permitted phi/W targets. Theta is supplied
+                separately only during joint training.
 
         Returns:
             Replacements for any selected memory tensors, plus shared-change metadata.

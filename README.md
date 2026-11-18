@@ -2,15 +2,15 @@
   <img src="assets/titans.svg" width="112" height="112" alt="Titans logo" />
 </p>
 
-<h1 align="center">Continual learning with a frozen LLM</h1>
+<h1 align="center">Continual learning and joint pretraining</h1>
 
-Stream documents through a pretrained Llama or Qwen2 backbone. Supply the memory
+Start from a fixed random Llama-style decoder or pretrained Qwen2.5-1.5B-Instruct. Supply the memory
 method, training data, objective and update policy. Titans is the reference method,
 implemented in [titans/methods/titans.py](titans/methods/titans.py). The default MAC connection uses
 one-token segments; MAG and the previous residual connection are selectable.
 
-This is a research library. Its Titans integration is a pretrained MAC retrofit,
-not a reproduction of the paper's complete architecture or published QA results.
+This is a research library. Its Titans integration supports joint pretraining and
+frozen-backbone adaptation; it is not a reproduction of the paper's complete architecture or published QA results.
 Numerical tests and throughput measurements do not establish long-range recall.
 
 ## Install
@@ -27,11 +27,11 @@ pip install -e .
 
 | Boundary | Contract |
 | --- | --- |
-| Fixed | Backbone weights stay frozen; causal ingestion follows arrival order; attention state stays bounded; answers run on isolated branches. |
+| Fixed | Two fixed decoder choices; causal ingestion follows arrival order; attention state stays bounded; answers run on isolated branches. |
 | Architecture and connection | `MemoryArchitecture` builds the neural memory; `ConnectionFactory` controls its backbone wiring. Defaults: Titans memory and causal MAC. See [architecture contracts](docs/architecture.md). |
 | Memory method | `MemoryFactory` constructs a `MemoryModule` with `initial_state` and `transition`. The module owns its shared parameters and state representation. |
 | Objective | `Objective(LossContext) -> LossValue` defines the loss and its normalization. It can use logits, labels, shared parameters, memory, or combinations. |
-| Update policy | `UpdateRule(UpdateContext) -> UpdateResult` chooses targets and optimizer behavior. Built-in SGD selects `phi`, `memory`, or `both`. |
+| Update policy | `UpdateRule(UpdateContext) -> UpdateResult` chooses targets and optimizer behavior. Built-in SGD selects `phi`, `memory`, `both`, or `joint` (phi + backbone). |
 | Data | `DataGenerator(seed) -> Iterable[TrainingEpisode]` defines documents, question timing and training targets. An ordinary iterable also works. |
 
 The contracts are in [protocols.py](titans/core/protocols.py), with lifecycle and
@@ -43,7 +43,7 @@ these policies; it does not accept a replacement ingestion loop.
 ```text
 titans/
   core/       # Protocols, configuration and input/output records
-  runtime/    # Frozen backbone, stream lifecycle and generic connections
+  runtime/    # Fixed backbone choices, stream lifecycle and connections
   methods/
     titans.py # Titans architecture, transition, MAC/MAG and convenience model
   training/   # Post-training loop, objectives and feedback update policies
@@ -62,6 +62,19 @@ same. Internal modules use the package paths above. Checkpoint loading accepts
 the previous built-in connection paths as well as the current ones. SGLang model
 discovery uses `titans.serving.models`; its optional dependencies are loaded only
 when the serving backend is requested.
+
+## Start from scratch
+
+```python
+from titans import TitansModel
+
+model = TitansModel.from_scratch(device="cuda", seed=17)
+```
+
+The decoder has 24 blocks, hidden width 1,024 and 16 attention heads. Its remaining
+architecture settings are also fixed. `fit` defaults to joint backbone/memory
+training for this model. See [pretraining](docs/pretraining.md) for the exact
+configuration, training example and manual H100 check.
 
 ## Instantiate a method
 
@@ -177,8 +190,10 @@ restored = ContinualModel.load_pretrained(
 ```
 
 `TitansModel.load_pretrained` reconstructs the Titans factory and also accepts
-checkpoints from the previous library version. Original backbone weights remain
-fixed in every supported training mode; `freeze_backbone=False` is rejected.
+checkpoints using the supported decoder configurations. Qwen defaults to a frozen
+backbone; scratch Llama defaults to joint training. `freeze_backbone` can explicitly
+select either training mode. Arbitrary backbone IDs and local backbone directories
+are no longer accepted by `from_pretrained`.
 
 ## Validation and accelerators
 

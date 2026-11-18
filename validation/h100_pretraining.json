@@ -1,0 +1,35 @@
+{
+  "passed": false,
+  "status": "allocation_unavailable",
+  "gpu_tests_executed": 0,
+  "elapsed_seconds": 301.2603269579122,
+  "call_graph": [
+    {
+      "function_call_id": "fc-01M7NZM9VF5VJFSR7Z2102NYY3",
+      "task_id": "",
+      "status": "PENDING"
+    }
+  ],
+  "date_utc": "2026-11-18",
+  "run_url": "https://modal.com/apps/abundant-ai/testing/ap-TY0LFw2DcmjfHBNq5pPFQi",
+  "gpu_training_executed": false,
+  "request": {
+    "gpu": "H100",
+    "cpu": 4,
+    "host_memory_mb": 16384
+  },
+  "reason": "No GPU container was allocated within the five-minute scheduling deadline; the pending call was cancelled.",
+  "earlier_attempts": [
+    {
+      "run_url": "https://modal.com/apps/abundant-ai/testing/ap-usdJzQ5ATX6jEoH5KKWYFA",
+      "status": "stopped while pending with zero containers; 8 CPU and 32 GB host RAM requested"
+    },
+    {
+      "run_url": "https://modal.com/apps/abundant-ai/testing/ap-CNiNpxYY7FSFAr3BiffwE5",
+      "status": "local polling timeout handler failed before GPU execution; corrected for the final attempt"
+    }
+  ],
+  "cpu_suite": "131 passed",
+  "full_size_cpu_smoke": "cpu_pretraining_smoke.json",
+  "reproduce_command": "uvx modal run --env testing checks/modal_pretraining.py --output validation/h100_pretraining.json"
+}

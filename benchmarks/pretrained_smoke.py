@@ -1,4 +1,4 @@
-"""Verify attachment and a real post-training step on a downloaded Llama checkpoint."""
+"""Verify attachment and a real post-training step on a cached Qwen checkpoint."""
 
 import argparse
 import json
@@ -22,9 +22,10 @@ from titans.runtime.connections import residual_connection
 
 
 def main() -> None:
-    """Compare stock Llama logits, train frozen-backbone memory, and test a reload."""
+    """Compare stock Qwen logits, train frozen-backbone memory, and test a reload."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backbone", required=True, type=Path)
+    parser.add_argument("--backbone", default="Qwen/Qwen2.5-1.5B-Instruct",
+                        choices=["Qwen/Qwen2.5-1.5B-Instruct"])
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--threads", type=int, default=4)

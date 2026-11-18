@@ -1,4 +1,4 @@
-"""Fixed stream execution for a frozen Llama/Qwen2 and pluggable memory modules."""
+"""Fixed stream execution with selectable joint training and pluggable memory."""
 
 import json
 import shutil
@@ -43,6 +43,12 @@ from titans.core.types import (
     TrainingEpisode,
     TrainingResult,
 )
+from titans.runtime.backbones import (
+    LLAMA_TOKENIZER,
+    PRETRAINED_BACKBONE,
+    scratch_config,
+    validate_backbone,
+)
 from titans.runtime.connections import ResidualConnection, residual_connection
 from titans.runtime.state import AttentionState, StreamState
 
@@ -52,7 +58,7 @@ if TYPE_CHECKING:
 
 
 class ContinualModel(nn.Module):
-    """Frozen backbone runtime with causal, replaceable memory transitions.
+    """Fixed decoder runtime with causal, replaceable memory transitions.
 
     Ingestion order, bounded attention and branch ownership are fixed. A factory
     supplies the algorithm at each selected layer. Custom algorithms use the
@@ -71,10 +77,10 @@ class ContinualModel(nn.Module):
         memory_architecture: MemoryArchitecture | None = None,
         connection_factory: ConnectionFactory | None = None,
     ) -> None:
-        """Attach initialized memory modules to an existing pretrained Llama or Qwen2.
+        """Attach memory modules to one of the two fixed decoder architectures.
 
         Args:
-            backbone: An unquantized, single-device Hugging Face Llama or Qwen2 model.
+            backbone: An unquantized, single-device model with a supported fixed configuration.
             tokenizer: Its tokenizer; vocabulary IDs must match the backbone.
             config: Memory placement and bounded backbone execution settings.
             memory_architecture: Architecture factory; defaults to Titans neural memory.
@@ -97,6 +103,7 @@ class ContinualModel(nn.Module):
             raise ValueError("Only static default, linear and llama3 RoPE modes are supported")
         if getattr(backbone, "is_quantized", False):
             raise ValueError("Quantized backbones are not supported")
+        self.backbone_kind = validate_backbone(backbone.config)
         self.backbone = backbone
         self.tokenizer = tokenizer
         self.config = config
@@ -186,7 +193,7 @@ class ContinualModel(nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        model_name_or_path: str | Path,
+        model_name_or_path: str | Path = PRETRAINED_BACKBONE,
         config: RuntimeConfig = RuntimeConfig(),
         *,
         memory_factory: MemoryFactory | None = None,
@@ -196,10 +203,10 @@ class ContinualModel(nn.Module):
         dtype: torch.dtype = torch.float32,
         local_files_only: bool = False,
     ) -> "ContinualModel":
-        """Load a Llama or Qwen2 checkpoint and attach new, untrained memory modules.
+        """Load the fixed Qwen checkpoint and attach new, untrained memory modules.
 
         Args:
-            model_name_or_path: Hugging Face model ID or local backbone directory.
+            model_name_or_path: Must equal Qwen/Qwen2.5-1.5B-Instruct.
             config: Bounded runtime and placement settings.
             memory_architecture: Architecture factory; defaults to Titans neural memory.
             connection_factory: Per-layer connection factory; defaults to causal MAC for ContinualModel.
@@ -211,6 +218,8 @@ class ContinualModel(nn.Module):
         Returns:
             A model in evaluation mode with a frozen backbone.
         """
+        if str(model_name_or_path) != PRETRAINED_BACKBONE:
+            raise ValueError("Only " + PRETRAINED_BACKBONE + " is supported; use load_pretrained for library checkpoints")
         backbone = AutoModelForCausalLM.from_pretrained(
             str(model_name_or_path), dtype=dtype, local_files_only=local_files_only,
             attn_implementation="sdpa",
@@ -220,6 +229,46 @@ class ContinualModel(nn.Module):
         )
         return cls(backbone, tokenizer, config, memory_factory=memory_factory,
                    memory_architecture=memory_architecture, connection_factory=connection_factory)
+
+    @classmethod
+    def from_scratch(
+        cls, config: RuntimeConfig = RuntimeConfig(), *,
+        memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None,
+        device: str = "cpu", dtype: torch.dtype = torch.float32,
+        seed: int = 0, local_files_only: bool = False,
+    ) -> Self:
+        """Initialize the fixed Llama-style decoder and its memory from scratch.
+
+        Args:
+            config: Memory placement and execution settings; no decoder overrides.
+            memory_factory: Legacy alias for memory_architecture.
+            memory_architecture: Optional neural memory constructor.
+            connection_factory: Optional backbone wiring; defaults to MAC.
+            device: Single initialization and execution device.
+            dtype: Floating-point parameter storage dtype.
+            seed: Reproducible initialization seed, isolated from the caller's RNG.
+            local_files_only: Require the fixed Llama 2 tokenizer in the local cache.
+
+        Returns:
+            An evaluation model whose fit default jointly trains backbone and phi.
+        """
+        tokenizer = AutoTokenizer.from_pretrained(LLAMA_TOKENIZER,
+                                                  local_files_only=local_files_only)
+        if len(tokenizer) != 32000:
+            raise ValueError("Scratch training requires the fixed 32K Llama 2 tokenizer")
+        target = torch.device(device)
+        devices = ([target.index if target.index is not None else torch.cuda.current_device()]
+                   if target.type == "cuda" else [])
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(seed)
+            with torch.device(target):
+                backbone = LlamaForCausalLM(scratch_config()).to(dtype=dtype)
+                model = cls(backbone, tokenizer, config, memory_factory=memory_factory,
+                            memory_architecture=memory_architecture,
+                            connection_factory=connection_factory)
+        return model
 
     def _validate_state(self, state: StreamState) -> None:
         """Reject foreign, stale, failed or differently placed streams.
@@ -641,13 +690,13 @@ class ContinualModel(nn.Module):
         self, episodes: Iterable[TrainingEpisode] | DataGenerator, config: TrainingConfig,
         *, loss: Objective | None = None, update: UpdateRule | None = None,
     ) -> TrainingResult:
-        """Post-train a memory method while keeping the backbone fixed.
+        """Train memory alone or jointly with the selected backbone.
 
         Args:
             episodes: One pass over streams, or a generator called with config.seed.
             config: Budget, truncation, supervision routing and output checkpoint.
             loss: Arbitrary objective; defaults to token cross-entropy.
-            update: Explicit checkpoint update rule for phi, W, or both. When supplied,
+            update: Explicit checkpoint rule for phi, W, both, or joint theta/phi. When supplied,
                 use document_qa routing; updates occur after complete QA checkpoints.
 
         Returns:
@@ -676,15 +725,27 @@ class ContinualModel(nn.Module):
         with torch.no_grad():
             return self._new_state()
 
+    def outer_parameters(self, *, train_backbone: bool) -> tuple[nn.Parameter, ...]:
+        """Select outer-loop parameters without including active stream weights W.
+
+        Args:
+            train_backbone: Include theta along with phi for joint training.
+
+        Returns:
+            Unique optimizer leaves; tied embeddings occur only once.
+        """
+        parameters = self.shared_parameters() + (tuple(self.backbone.parameters()) if train_backbone else ())
+        return tuple(dict.fromkeys(parameters))
+
     def shared_parameters(self) -> tuple[nn.Parameter, ...]:
-        """Return phi, excluding every frozen backbone parameter."""
+        """Return phi, excluding backbone parameters regardless of training mode."""
         return (tuple(self.memories.parameters()) + tuple(self.connections.parameters())
                 + (self.persistent,))
 
     def learn(
         self, question: Question, target_answer: str, state: StreamState,
         *, loss: Objective | None = None, update: UpdateRule | None = None,
-        retain_history: bool = False,
+        retain_history: bool = False, train_backbone: bool = False,
     ) -> "LearningResult":
         """Adapt using explicitly supplied feedback, leaving teacher tokens off-stream.
 
@@ -693,8 +754,10 @@ class ContinualModel(nn.Module):
             target_answer: Released supervision, never a hidden evaluation answer.
             state: Continuing stream receiving functional W replacements.
             loss: Arbitrary scalar objective; defaults to answer cross-entropy.
-            update: Target/optimizer policy; defaults to SGD on W only.
+            update: Target/optimizer policy; defaults to W-only SGD, or joint SGD
+                when train_backbone is enabled.
             retain_history: Preserve the current unroll for meta-gradients into phi.
+            train_backbone: Expose theta to an explicit joint update policy.
 
         Returns:
             Loss and token accounting. Updating phi invalidates other live streams.
@@ -702,7 +765,7 @@ class ContinualModel(nn.Module):
         from titans.training.learning import learn
 
         return learn(self, question, target_answer, state, loss=loss, update=update,
-                     retain_history=retain_history)
+                     retain_history=retain_history, train_backbone=train_backbone)
 
     def save_pretrained(self, path: str | Path) -> Path:
         """Atomically save a complete inference checkpoint without overwriting files.
@@ -802,10 +865,13 @@ class ContinualModel(nn.Module):
                 connection_factory = titans_mag_connection
             else:
                 raise ValueError("Custom checkpoint requires an explicit connection_factory")
-        model = cls.from_pretrained(source / "backbone", config,
-                                    memory_factory=memory_factory, memory_architecture=memory_architecture,
-                                    connection_factory=connection_factory, device=device, dtype=dtype,
-                                    local_files_only=True)
+        backbone = AutoModelForCausalLM.from_pretrained(
+            source / "backbone", dtype=dtype, local_files_only=True,
+            attn_implementation="sdpa",
+        ).to(device)
+        tokenizer = AutoTokenizer.from_pretrained(source / "backbone", local_files_only=True)
+        model = cls(backbone, tokenizer, config, memory_factory=memory_factory,
+                    memory_architecture=memory_architecture, connection_factory=connection_factory)
         adapter = load_file(source / "memory.safetensors")
         model.memories.load_state_dict({
             key.removeprefix("memories."): value

@@ -57,7 +57,8 @@ retrieved context token. Only persistent-prefix KV survives between segments.
 The memory state carries the history. This ensures causal execution and equal
 results when the caller splits a document differently. Virtual context tokens
 use segment-local rotary positions and do not count as real input/label tokens.
-The backbone remains a pretrained, frozen decoder, with its original FFN.
+The decoder architecture and FFN remain fixed. Joint pretraining updates their
+weights; Qwen adaptation freezes them by default.
 
 The default memory write chunk is one token. Choosing a larger memory write
 chunk delays commits; that is an algorithmic choice distinct from MAC segmentation.
@@ -74,13 +75,13 @@ one real token at a time, and declare a finite `max_context_tokens` bound.
 
 | Boundary | Fixed runtime contract | Agent controls |
 | --- | --- | --- |
-| Backbone | Frozen weights; supported Llama/Qwen2 execution | Pretrained checkpoint |
+| Backbone | Fixed scratch Llama or Qwen2.5-1.5B-Instruct | Choose scratch/pretrained start and outer training mode |
 | Architecture | Registered modules and independent state ownership | `MemoryArchitecture`, network size/structure and initialization |
 | Transition | Causality and stream continuity | `MemoryModule.transition` and state representation |
 | Connection | Shape/device checks, bounded attention, real-token order | `ConnectionFactory`, `prepare`, `finish`, `combine`, layer placement |
 | Data | Ordered episodes and explicit feedback availability | `DataGenerator`, documents, questions, answers, checkpoint timing |
 | Objective | Finite scalar and normalization contract | `Objective` functional form |
-| Updates | Backbone excluded; state/revision ownership | `UpdateRule`, phi/W/both, optimizer and rates |
+| Updates | State/revision ownership; theta separate from phi and W | `UpdateRule`, phi/W/both/joint, optimizer and rates |
 | Execution | `ingest`, branching, token accounting, checkpoint lifecycle | Supported window, unroll and optimization settings |
 
 ## Compatibility and optimized execution

@@ -28,6 +28,7 @@ from titans.core.protocols import (
 )
 from titans.core.protocols import MemoryState as StateProtocol
 from titans.core.types import RuntimeConfig
+from titans.runtime.backbones import PRETRAINED_BACKBONE
 from titans.runtime.connections import ResidualConnection, residual_connection
 from titans.runtime.model import ContinualModel
 
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TitansConfig(RuntimeConfig):
-    """Memory and local-attention settings for a Llama retrofit.
+    """Memory and local-attention settings for the Titans method.
 
     Chunk size one implements tokenwise updates. Larger chunks use gradients
     evaluated at the chunk's initial weights and commit only complete chunks.
@@ -413,7 +414,7 @@ class TitansMAGConnection(ResidualConnection):
     Implements the topology of Titans section 4.2, equations 26-28. RMS
     normalization and SiLU-product gating are explicit implementation choices;
     the paper permits nonlinear gating and does not provide complete code here.
-    The host's frozen decoder, residual and FFN remain a pretrained retrofit.
+    The host uses the fixed decoder, residual and FFN execution path.
     """
 
     def __init__(self, hidden_size: int) -> None:
@@ -463,7 +464,7 @@ class TitansMACConnection(ResidualConnection):
     Implements the ordering in equations 21-25: read old memory, prepend its
     representation to attention, write attention output, then read updated memory.
     The one-token segment makes arbitrary stream splits equivalent without looking
-    ahead. This is a pretrained retrofit, not the paper's full training recipe.
+    ahead. The segmentation differs from the paper's full training recipe.
     """
 
     max_context_tokens = 1
@@ -577,7 +578,7 @@ class TitansModel(ContinualModel):
         """Attach Titans or an explicitly supplied compatible method factory.
 
         Args:
-            backbone: Frozen single-device Llama or Qwen2 backbone.
+            backbone: Single-device model with one of the fixed decoder configurations.
             tokenizer: Tokenizer matching the backbone vocabulary.
             config: Runtime and Titans algorithm settings.
             memory_architecture: Optional replacement for the complete memory network.
@@ -594,8 +595,38 @@ class TitansModel(ContinualModel):
                                and all(type(m) is NeuralMemory for m in self.memories.values()))
 
     @classmethod
+    def from_scratch(
+        cls, config: TitansConfig = TitansConfig(), *,
+        memory_factory: MemoryFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
+        connection_factory: ConnectionFactory | None = None,
+        device: str = "cpu", dtype: torch.dtype = torch.float32,
+        seed: int = 0, local_files_only: bool = False,
+    ) -> Self:
+        """Build the fixed 24-block, 1024-wide, 16-head scratch model with Titans.
+
+        Args:
+            config: Memory and runtime settings; the decoder architecture is fixed.
+            memory_factory: Legacy memory constructor alias.
+            memory_architecture: Optional replacement memory architecture.
+            connection_factory: Optional replacement wiring; defaults to MAC.
+            device: Single target device.
+            dtype: Parameter storage dtype.
+            seed: Isolated initialization seed.
+            local_files_only: Require the tokenizer to be cached locally.
+
+        Returns:
+            Randomly initialized model with joint outer training as its fit default.
+        """
+        return super().from_scratch(
+            config, memory_factory=memory_factory, memory_architecture=memory_architecture,
+            connection_factory=connection_factory, device=device, dtype=dtype,
+            seed=seed, local_files_only=local_files_only,
+        )
+
+    @classmethod
     def from_pretrained(
-        cls, model_name_or_path: str | Path, config: TitansConfig = TitansConfig(),
+        cls, model_name_or_path: str | Path = PRETRAINED_BACKBONE, config: TitansConfig = TitansConfig(),
         *, memory_factory: MemoryFactory | None = None,
         memory_architecture: MemoryArchitecture | None = None,
         connection_factory: ConnectionFactory | None = None, device: str = "cpu",
@@ -604,7 +635,7 @@ class TitansModel(ContinualModel):
         """Load a pretrained backbone and attach untrained Titans modules.
 
         Args:
-            model_name_or_path: Hugging Face ID or local checkpoint.
+            model_name_or_path: Must equal the fixed Qwen model ID.
             config: Runtime and method settings.
             memory_architecture: Optional replacement for the complete memory network.
             connection_factory: Optional connection; defaults to causal MAC.
@@ -626,11 +657,13 @@ class TitansModel(ContinualModel):
     def load_pretrained(
         cls, path: str | Path, *, device: str = "cpu", dtype: torch.dtype = torch.float32,
         connection_factory: ConnectionFactory | None = None,
+        memory_architecture: MemoryArchitecture | None = None,
     ) -> Self:
         """Restore a Titans checkpoint, including the previous version's format.
 
         Args:
             connection_factory: Explicit factory required for custom saved connections.
+            memory_architecture: Explicit factory required for custom saved memory networks.
             path: Directory written by save_pretrained.
             device: Single target device.
             dtype: Backbone and adapter parameter dtype.
@@ -641,6 +674,6 @@ class TitansModel(ContinualModel):
         settings = json.loads((Path(path) / "titans.json").read_text())["config"]
         settings["memory_layers"] = tuple(settings["memory_layers"])
         config = TitansConfig(**settings)
-        return super().load_pretrained(path, memory_factory=titans(config), config=config,
+        return super().load_pretrained(path, memory_architecture=memory_architecture or TitansArchitecture(config), config=config,
                                        connection_factory=connection_factory,
                                        device=device, dtype=dtype)

@@ -10,17 +10,10 @@ methods and explicit QA feedback use the local PyTorch runtime. Historical H100
 measurements predate the protocol refactor and have not been re-run for it.
 
 `Qwen/Qwen2.5-1.5B-Instruct` is the default backbone for examples and benchmarks.
-`HuggingFaceTB/SmolLM2-1.7B-Instruct` remains available as a comparison baseline.
-Both use the same public API, memory kernels and SGLang worker. Select either model ID
-in `TitansModel.from_pretrained`; checkpoints retain the backbone architecture.
+It is the only supported pretrained start. The scratch Llama configuration and
+joint training are described in [pretraining](pretraining.md). Older SmolLM2
+measurements below are historical; that backbone is no longer selectable.
 
-| Backbone | HF architecture | Layers | Query/KV heads | Head dimension |
-| --- | --- | ---: | ---: | ---: |
-| SmolLM2-1.7B-Instruct | `LlamaForCausalLM` | 24 | 32/32 | 64 |
-| Qwen2.5-1.5B-Instruct | `Qwen2ForCausalLM` | 28 | 12/2 | 128 |
-
-Sources: [SmolLM2 configuration](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct/blob/main/config.json)
-and [Qwen2.5 configuration](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/main/config.json).
 Qwen's Q/K/V projection biases and grouped KV heads are preserved in both eager
 and compiled paths. Its smaller KV cache does not by itself establish a speedup;
 the benchmark measures the complete Titans serving path.
@@ -157,8 +150,7 @@ and benchmark scripts and uses one H100 per job:
 uv run --with modal modal run --env testing benchmarks/modal_h100.py --run-benchmark
 ```
 
-Both standalone benchmarks default to Qwen2.5-1.5B-Instruct. Pass
-`--model HuggingFaceTB/SmolLM2-1.7B-Instruct` to select the comparison backbone.
+Both standalone benchmarks use Qwen2.5-1.5B-Instruct.
 The Modal `--run-benchmark` command writes `validation/h100_qwen_inference.json`.
 
 Compilation and engine startup are recorded separately. Timed requests run after

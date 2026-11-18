@@ -1,7 +1,9 @@
 # Continual-learning protocol
 
-The backbone B is fixed. Phi is the shared method initialization, projections and
-other registered parameters. W is algorithm-owned active memory within a stream.
+The decoder architecture is fixed to one of two supported configurations. Its
+parameters theta are frozen during ordinary streaming and trainable during joint
+pretraining. Phi is the shared method initialization, projections and other
+registered memory/connection parameters. W is algorithm-owned active memory within a stream.
 Different methods may use different W representations and auxiliary buffers.
 
 ## Fixed ingestion
@@ -14,7 +16,7 @@ episode creates a new stream. `ingest` is marked final in the type contract.
 
 Each selected layer calls its method's `transition(hidden, state, write=...)`.
 The runtime retains ownership of attention, position accounting, token budgets,
-branching and the frozen backbone. The connection protocol controls attention inputs and output fusion, including
+branching and the fixed decoder architecture. The connection protocol controls attention inputs and output fusion, including
 attention-driven memory writes. See [architecture and connection contracts](architecture.md)
 for the MAC default, available hooks, and segmentation limits.
 
@@ -56,7 +58,8 @@ contains compiler wrappers and shared backbone execution kernels.
 
 `Objective(LossContext) -> LossValue` is independent of update target selection.
 The context includes aligned logits `[targets, vocabulary]`, token IDs `[targets]`,
-stream state, phi parameters and a document/answer phase marker. Return a scalar
+stream state, phi parameters and a document/answer phase marker. In joint training,
+`backbone_parameters` separately supplies theta. Return a scalar
 loss sum and a finite positive normalization weight. The default cross-entropy
 uses the number of target tokens as the weight. An arbitrary state regularizer
 can instead use unit weight.
@@ -70,17 +73,19 @@ training path. They must not mutate state or parameters.
 ## Update policy
 
 `UpdateRule(UpdateContext) -> UpdateResult` receives normalized scalar loss,
-shared phi parameters and named active W tensors. B is excluded. The policy can
+shared phi parameters and named active W tensors. Joint training also supplies
+theta in `backbone_parameters`. The policy can
 select a subset, use autograd or another solver, and own optimizer state.
 
-It changes selected phi tensors in place and returns W replacements keyed by
+It changes selected phi/theta tensors in place and returns W replacements keyed by
 `(layer_index, parameter_name)`. It must accurately report `shared_changed`.
 The runtime validates replacement names, shapes, dtypes, devices and finite values,
 commits replacements to the continuing stream, and detaches its old graph.
 Momentum is not automatically reset when W is replaced; a method defines how
 its auxiliary state should respond in `replace`.
 
-The built-in `GradientUpdate` performs clipped SGD on `phi`, `memory`, or `both`.
+The built-in `GradientUpdate` performs clipped SGD on `phi`, `memory`, `both`
+(phi and W), or `joint` (phi and theta).
 If targets include phi, the gradient can pass through the current document unroll.
 Selecting both computes both derivatives on the same loss graph before changes.
 Learning W directly does not change the shared initial W0 unless the selected
@@ -110,7 +115,7 @@ must be counted by the experiment.
 
 ## Training paths and gradient boundaries
 
-The accumulated AdamW path updates phi. It supports document LM, answer QA or
+The accumulated AdamW path updates phi and, in joint training, theta. It supports document LM, answer QA or
 mixed supervision, custom objectives and token-based gradient accumulation.
 The existing Liger optimization is used only for its built-in cross-entropy.
 
@@ -129,8 +134,8 @@ model artifact. Feedback losses are averaged per checkpoint in this path;
 accumulated training normalizes by the objective's supplied weights.
 
 Test-time document updates run the chosen transition. Test-time QA adaptation
-requires an explicit learn call with released supervision. Neither mode changes
-B. For exact experiment replay, record runtime settings, factory settings,
+requires an explicit learn call with released supervision. Both keep theta frozen
+by default; `learn(..., train_backbone=True)` explicitly enables joint feedback updates. For exact experiment replay, record runtime settings, factory settings,
 objective/update implementation, generator seed and checkpoint revision together.
 
 ## Scope
@@ -146,7 +151,8 @@ the fused cross-entropy shortcut. Custom checkpoint updates use their own policy
 instead of the accumulated AdamW schedule. These are explicit extension choices;
 the original optimized default training path remains available.
 
-Single-device Llama and Qwen2 are supported. Generic methods and explicit feedback
+The fixed scratch Llama and pretrained Qwen2.5-1.5B-Instruct are supported on one device.
+See [pretraining](pretraining.md) for joint theta/phi updates. Generic methods and explicit feedback
 run locally in PyTorch. Remote SGLang state cannot be passed to learn; the existing
 Titans serving specialization is retained for ingestion and answering. Shared
 checkpoint save/load is supported; live-state and optimizer-resume serialization

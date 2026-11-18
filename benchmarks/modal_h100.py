@@ -64,7 +64,7 @@ def benchmark() -> str:
 @app.function(image=image, gpu="H100!", cpu=8, memory=32768, timeout=3600,
               max_containers=1, scaledown_window=30, volumes={"/cache": cache})
 def compare_backbones() -> str:
-    """Test both architectures and benchmark them sequentially on one physical H100.
+    """Benchmark the supported Qwen model on one physical H100.
 
     Each measurement has a fresh process to release worker memory and isolate
     compiler specializations. Model downloads and compilation are outside steady timings.
@@ -87,8 +87,7 @@ def compare_backbones() -> str:
     checked.check_returncode()
     report: dict[str, object] = {"device": device, "gpu_tests": checked.stdout, "models": {}}
     models: dict[str, object] = {}
-    for label, model in (("qwen2_5", "Qwen/Qwen2.5-1.5B-Instruct"),
-                         ("smollm2", "HuggingFaceTB/SmolLM2-1.7B-Instruct")):
+    for label, model in (("qwen2_5", "Qwen/Qwen2.5-1.5B-Instruct"),):
         measurements: dict[str, object] = {}
         for mode, module in (("inference", "benchmarks.h100"),
                              ("posttraining", "benchmarks.posttraining")):
@@ -110,7 +109,7 @@ def main(
 
     Args:
         output: Local JSON destination for the remote result.
-        compare: Benchmark both supported backbones, including post-training.
+        compare: Benchmark Qwen inference and post-training.
         run_benchmark: Whether to run CUDA checks and inference timing after hardware inspection.
     """
     if compare:

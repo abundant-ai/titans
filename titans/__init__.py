@@ -1,4 +1,4 @@
-"""Titans memory for pretrained Llama models."""
+"""Joint scratch pretraining and Qwen continual learning with pluggable memory."""
 
 from titans.core.protocols import (
     BackboneConnection,

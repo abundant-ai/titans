@@ -75,7 +75,10 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Post-training budget and optimization settings.
+    """Training budget and optimization settings.
+
+    freeze_backbone=None selects joint training for scratch Llama and memory-only
+    training for Qwen. An explicit boolean overrides that training selection.
 
     ``max_tokens`` counts document, question and target tokens actually forwarded;
     persistent prefix tokens are excluded. ``sequence_length`` bounds each
@@ -89,15 +92,13 @@ class TrainingConfig:
     tokens_per_step: int = 8192
     learning_rate: float = 1e-4
     objective: Literal["language_modeling", "document_qa", "mixed"] = "mixed"
-    freeze_backbone: bool = True
+    freeze_backbone: bool | None = None
     seed: int = 0
     max_grad_norm: float = 1.0
     activation_checkpointing: bool = True
 
     def __post_init__(self) -> None:
         """Validate the finite token budget and optimizer controls."""
-        if not self.freeze_backbone:
-            raise ValueError("The continual-learning runtime always freezes the backbone")
         if min(self.max_tokens, self.sequence_length, self.tokens_per_step) < 1:
             raise ValueError("Token budgets and sequence_length must be positive")
         if any(not math.isfinite(value) or value <= 0

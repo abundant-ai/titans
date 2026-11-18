@@ -35,7 +35,9 @@ class _TrainingRun:
         self.model = model
         self.config = config
         self.objective = loss
-        self.parameters = list(model.shared_parameters())
+        self.train_backbone = not (config.freeze_backbone if config.freeze_backbone is not None
+                                   else model.backbone_kind != "scratch")
+        self.parameters = list(model.outer_parameters(train_backbone=self.train_backbone))
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate)
         self.tokens = 0
         self.steps = 0
@@ -124,6 +126,7 @@ class _TrainingRun:
                         result = self.objective(LossContext(
                             predictions.reshape(-1, predictions.shape[-1]), targets, state,
                             self.model.shared_parameters(), phase,
+                            tuple(self.model.backbone.parameters()) if self.train_backbone else (),
                         ))
                         validate_loss(result)
                         loss, weight = result.value, result.weight
@@ -200,7 +203,7 @@ def fit_model(
     model: "ContinualModel", episodes: Iterable[TrainingEpisode] | DataGenerator,
     config: TrainingConfig, *, loss: Objective | None = None, update: UpdateRule | None = None,
 ) -> TrainingResult:
-    """Execute a single post-training pass and write its complete checkpoint.
+    """Execute a memory-only or joint training pass and save its learned weights.
 
     Args:
         model: Host model and memory components.
@@ -228,7 +231,9 @@ def fit_model(
     was_checkpointing = model._checkpoint_backbone
     model._checkpoint_backbone = config.activation_checkpointing
     model._revision += 1
-    model.backbone.requires_grad_(False)
+    train_backbone = not (config.freeze_backbone if config.freeze_backbone is not None
+                          else model.backbone_kind != "scratch")
+    model.backbone.requires_grad_(train_backbone)
     model.memories.requires_grad_(True)
     model.connections.requires_grad_(True)
     model.persistent.requires_grad_(True)
@@ -255,6 +260,7 @@ def fit_model(
         checkpoint = model.save_pretrained(config.output_dir)
     finally:
         run.optimizer.zero_grad(set_to_none=True)
+        model.backbone.requires_grad_(False)
         model.train(was_training)
         model._checkpoint_backbone = was_checkpointing
     return TrainingResult(
@@ -277,7 +283,7 @@ def fit_checkpoints(
     Document state persists across unrolls and questions, and resets per episode.
 
     Args:
-        model: Prepared runtime with a frozen backbone.
+        model: Prepared runtime with the selected outer-training targets.
         episodes: Lazy ordered streams and questions at document checkpoints.
         config: Token budget, unroll limit and destination checkpoint.
         loss: Arbitrary scalar QA/state objective.
@@ -316,7 +322,9 @@ def fit_checkpoints(
                 if window_tokens + size > config.sequence_length:
                     state._detach()
                 result = model.learn(item.question, item.target_answer, state,
-                                     loss=loss, update=update, retain_history=True)
+                                     loss=loss, update=update, retain_history=True,
+                                     train_backbone=not (config.freeze_backbone if config.freeze_backbone is not None
+                                                         else model.backbone_kind != "scratch"))
                 tokens += result.tokens_processed
                 total_loss += result.loss
                 steps += 1

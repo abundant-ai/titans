@@ -56,21 +56,21 @@ def validate_loss(result: LossValue) -> None:
 
 @dataclass(frozen=True)
 class GradientUpdate:
-    """SGD policy selecting phi, active memory W, or both; B is never a target.
+    """SGD selecting phi, active W, both, or joint phi/theta parameters.
 
     Phi is updated in place. W replacements are returned functionally so they
     can be committed to the continuing stream without committing teacher tokens.
     Custom UpdateRule implementations can instead own Adam state or other solvers.
     """
 
-    targets: Literal["phi", "memory", "both"] = "memory"
+    targets: Literal["phi", "memory", "both", "joint"] = "memory"
     learning_rate: float = 1e-3
     max_grad_norm: float = 1.0
 
     def __post_init__(self) -> None:
         """Reject invalid target groups, nonfinite rates and clipping bounds."""
-        if self.targets not in ("phi", "memory", "both"):
-            raise ValueError("targets must be phi, memory or both")
+        if self.targets not in ("phi", "memory", "both", "joint"):
+            raise ValueError("targets must be phi, memory, both or joint")
         if any(not math.isfinite(x) or x <= 0
                for x in (self.learning_rate, self.max_grad_norm)):
             raise ValueError("Learning rate and gradient bound must be finite and positive")
@@ -89,7 +89,11 @@ class GradientUpdate:
             FloatingPointError: Any selected gradient is nonfinite.
         """
         shared = context.shared_parameters if self.targets != "memory" else ()
-        memory = dict(context.memory_parameters) if self.targets != "phi" else {}
+        if self.targets == "joint":
+            if not context.backbone_parameters:
+                raise ValueError("joint updates require train_backbone=True")
+            shared += context.backbone_parameters
+        memory = dict(context.memory_parameters) if self.targets in ("memory", "both") else {}
         parameters = shared + tuple(memory.values())
         if not parameters or not context.loss.requires_grad:
             raise ValueError("The loss has no differentiable targets")
@@ -145,17 +149,19 @@ def feedback_tokens(
 def learn(
     model: "ContinualModel", question: Question, target_answer: str, state: StreamState,
     *, loss: Objective | None = None, update: UpdateRule | None = None,
-    retain_history: bool = False,
+    retain_history: bool = False, train_backbone: bool = False,
 ) -> LearningResult:
-    """Apply released QA supervision to phi, W, or both, on an isolated branch.
+    """Apply released QA supervision to selected targets on an isolated branch.
 
     Args:
-        model: Frozen-backbone runtime. Phi updates invalidate other live streams.
+        model: Runtime whose shared or backbone updates invalidate other streams.
         question: Question being learned from, not an evaluator's hidden query.
         target_answer: Explicitly available answer or correction.
         state: Continuing local stream; teacher prompts and answers are never appended.
         loss: Objective over predictions, phi and pre-question memory.
-        update: Target selection and optimizer; defaults to W-only SGD.
+        update: Target selection and optimizer; defaults to joint SGD when
+            train_backbone is enabled, otherwise W-only SGD.
+        train_backbone: Expose backbone parameters to joint update policies.
         retain_history: Keep recent document graphs for outer meta-gradients. A completed
             update always detaches the continuing state before parameters are reused.
 
@@ -169,9 +175,11 @@ def learn(
     if state._remote_id is not None:
         raise ValueError("Explicit learning requires a local torch stream")
     prompt, targets = feedback_tokens(model, question, target_answer)
-    model.backbone.requires_grad_(False)
+    previous_grad_flags = tuple(p.requires_grad for p in model.backbone.parameters())
+    model.backbone.requires_grad_(train_backbone)
     objective = loss or cross_entropy
-    rule = update or GradientUpdate()
+    rule = update or GradientUpdate(targets="joint" if train_backbone else "memory")
+    theta = tuple(model.backbone.parameters()) if train_backbone else ()
     shared = model.shared_parameters()
     was_training = model.training
     model.eval()
@@ -196,7 +204,7 @@ def learn(
             logits = model._forward_tokens(targets, branch, write=False)
             predictions = torch.cat((previous, logits[:, :-1]), 1).reshape(-1, logits.shape[-1])
             result = objective(LossContext(
-                predictions, torch.tensor(targets, device=logits.device), working, shared, "answer",
+                predictions, torch.tensor(targets, device=logits.device), working, shared, "answer", theta,
             ))
             validate_loss(result)
             normalized = result.value / result.weight
@@ -204,7 +212,7 @@ def learn(
             # Any exception after invoking an external updater can leave phi changed.
             # Invalidate the supplied state on failure rather than reusing a partial update.
             try:
-                changed = rule(UpdateContext(normalized, shared, memory))
+                changed = rule(UpdateContext(normalized, shared, memory, theta))
                 for (layer, name), tensor in changed.memory.items():
                     if (layer, name) not in memory:
                         raise ValueError("Updater returned an undeclared memory target")
@@ -226,6 +234,8 @@ def learn(
             state._revision = model._revision
             state._detach()
     finally:
+        for parameter, enabled in zip(model.backbone.parameters(), previous_grad_flags, strict=True):
+            parameter.requires_grad_(enabled)
         model.train(was_training)
     return LearningResult(value, len(prompt) + len(targets), changed.shared_changed,
                           len(changed.memory))

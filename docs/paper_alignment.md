@@ -9,7 +9,7 @@ The historical retrofit discussion below describes the residual connection.
 
 The reference is [Titans: Learning to Memorize at Test Time, v1](https://arxiv.org/html/2501.00663v1).
 The method in [`titans/methods/titans.py`](../titans/methods/titans.py) implements its associative neural-memory updates and attaches them
-to a pretrained Llama or Qwen2 model. The retrofit has its own retrieval schedule and residual
+to the fixed scratch Llama decoder or pretrained Qwen2.5-1.5B-Instruct. The retrofit has its own retrieval schedule and residual
 gate. It does not reproduce the paper's complete from-scratch MAG architecture
 or its published evaluation results.
 
@@ -67,8 +67,8 @@ while a chunk is incomplete. `read_only` reads the committed memory; `temporary`
 can complete the pending chunk on its disposable branch. Neither policy modifies
 the source stream. The local attention window covers recent tokens independently.
 
-The host keeps its pretrained MLP, normalization and rotary embedding
-parameters. A sigmoid gate controls the added memory residual. Memory QKV uses
+The host uses Llama/Qwen MLP, normalization and rotary embedding operations.
+Their parameters can train jointly in scratch pretraining. A sigmoid gate controls the added memory residual. Memory QKV uses
 causal depthwise convolution, SiLU, and L2-normalized queries and keys. Persistent
 prefix tokens do not write into fast memory. These choices define this retrofit;
 they should be held fixed when comparing memory-update algorithms.

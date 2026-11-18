@@ -190,10 +190,9 @@ def test_fit_exact_budget_and_partial_accumulation(tiny_model: TitansModel, tmp_
     assert result.stop_reason == "token_budget"
 
 
-def test_backbone_unfreezing_is_rejected() -> None:
-    """The fixed runtime contract rejects attempts to update backbone weights."""
-    with pytest.raises(ValueError, match="always freezes"):
-        TrainingConfig(Path("unused"), max_tokens=20, freeze_backbone=False)
+def test_joint_training_configuration() -> None:
+    """Explicit joint training is accepted without changing the backbone choice."""
+    assert TrainingConfig(Path("unused"), max_tokens=20, freeze_backbone=False).freeze_backbone is False
 
 
 def test_checkpoint_roundtrip(tiny_model: TitansModel, tmp_path: Path) -> None:
@@ -214,13 +213,13 @@ def test_checkpoint_roundtrip(tiny_model: TitansModel, tmp_path: Path) -> None:
 
 
 def test_loading_existing_backbone_entry_point(tiny_model: TitansModel, tmp_path: Path) -> None:
-    """The public attach entry point must load a real local HF checkpoint and tokenizer."""
+    """Arbitrary backbone checkpoints cannot bypass the fixed pretrained selection."""
     path = tmp_path / "backbone"
     tiny_model.backbone.save_pretrained(path)
     tiny_model.tokenizer.save_pretrained(path)
-    loaded = TitansModel.from_pretrained(path, tiny_model.config, local_files_only=True)
-    assert type(loaded.backbone) is type(tiny_model.backbone)
-    assert loaded.ingest(Document("a", "Alice lives in Paris")).documents_seen == 1
+    with pytest.raises(ValueError, match="Only Qwen"):
+        TitansModel.from_pretrained(path, tiny_model.config, local_files_only=True)
+
 
 
 def test_seeded_answers_leave_global_rng_unchanged(tiny_model: TitansModel) -> None:

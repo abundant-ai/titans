@@ -27,3 +27,11 @@ gradient protocols separately.
 `gpu_inference.json` records the actual device, package versions, source hashes,
 check counts and complete output. A failed or skipped GPU check makes the command
 fail after saving the report. These checks do not measure QA quality or throughput.
+
+## Joint pretraining check
+
+`uvx modal run --env testing checks/modal_pretraining.py` separately runs the
+explicitly authorized H100 training smoke test. It uses the full fixed scratch
+decoder, compares eager/optimized gradients, executes three optimizer steps, and
+checks a saved model. This job is manual and outside CI. The inference checks
+above continue to run no training. See [pretraining](../docs/pretraining.md).

@@ -1,6 +1,31 @@
 # Validation record
 
-The architecture extension passes 111 CPU tests. GPU tests remain skipped. These cover the equation oracle,
+## Joint pretraining
+
+The joint-training extension passes **131 CPU tests**, Ruff, and an isolated
+wheel import/architecture smoke check. Tests cover joint theta/phi updates,
+truncation, eager/compiled execution, custom joint policies, refreezing after
+failure, architecture restrictions, checkpoint restoration and the previous
+frozen-backbone behavior.
+
+[`cpu_pretraining_smoke.json`](cpu_pretraining_smoke.json) records a separate
+full-size CPU check with the real Llama 2 tokenizer: construction of the fixed
+373,867,520-parameter decoder and finite, nonzero backward gradients in embeddings,
+attention, FFN, output head and memory gates. It uses four input tokens and does
+not establish pretraining convergence or long-context quality.
+
+The new `checks/modal_pretraining.py` is an explicitly requested, manual H100
+training check, separate from the unchanged inference-only check and outside CI.
+
+[`h100_pretraining.json`](h100_pretraining.json) records the November 18 attempt:
+Modal kept the H100 call pending for 301 seconds without a container ID. The
+launcher cancelled it. Zero GPU tests and zero GPU optimizer steps executed;
+H100 gradient parity is **unverified**, not passed. The report links the attempts
+and gives the command for a later manual run. No GPU check was added to CI.
+
+## Earlier architecture extension
+
+The earlier architecture extension passed 111 CPU tests. GPU tests remain skipped. These cover the equation oracle,
 outer gradients, finite differences, compiled/eager agreement, training, custom
 methods/objectives/update rules, state ownership and checkpoint restoration.
 
@@ -9,7 +34,7 @@ default pytest discovery and CI. They cover inference only; they do not run
 post-training, QA feedback learning or optimizer steps. The earlier measurements
 below predate the protocol refactor and remain historical evidence.
 
-Current GPU verification was **skipped at the user's request** after Modal left
+That GPU verification was **skipped at the user's request** after Modal left
 H100, H200 and L4 calls queued without allocating a container. The queued jobs
 were stopped. [`modal_attempts.json`](modal_attempts.json) records the observed
 status; zero GPU tests and zero GPU training steps ran for this refactor.
