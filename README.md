@@ -216,7 +216,7 @@ uvx modal run --env testing checks/modal_inference.py --output validation/gpu_in
 ```
 
 This uses one L4 for portable kernel parity, streaming, isolated answers and
-checkpoint restoration. Add `--hopper` to include FA3 and CUDA graph checks on
+checkpoint restoration. Add `--hopper` to include CUDA graph checks on
 one H200. It runs no post-training, QA feedback updates or optimizer steps.
 See [the manual checks](checks/README.md) for the exact scope.
 

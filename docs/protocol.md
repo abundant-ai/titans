@@ -142,7 +142,7 @@ objective/update implementation, generator seed and checkpoint revision together
 
 The default Titans path retains compiled memory kernels, Liger backbone kernels
 and fused cross-entropy, activation checkpointing, truncated backpropagation and
-token-based gradient accumulation. Titans inference retains SGLang, FA3 and CUDA
+token-based gradient accumulation. All connections use PyTorch SDPA. The residual connection supports SGLang and CUDA
 graphs. The generic runtime can enable its shared compile/Liger settings;
 specialized Titans serving still requires `TitansModel`.
 

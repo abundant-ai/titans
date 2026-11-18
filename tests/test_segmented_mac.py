@@ -188,6 +188,9 @@ def test_checkpoint_defaults(tiny_model: TitansModel, tmp_path: Path, version: i
     path = model.save_pretrained(tmp_path / "checkpoint")
     metadata = json.loads((path / "titans.json").read_text())
     assert metadata["builtin_memory_configs"]["0"]["chunk_size"] == 16
+    metadata["config"]["attention_backend"] = "fa3"
+    for options in metadata["builtin_memory_configs"].values():
+        options["attention_backend"] = "fa3"
     if version < 4:
         metadata["format_version"] = version
         metadata.pop("builtin_memory_configs")
@@ -199,9 +202,10 @@ def test_checkpoint_defaults(tiny_model: TitansModel, tmp_path: Path, version: i
             metadata["config"].pop("chunk_size")
         if version < 3:
             metadata.pop("connection_types")
-        (path / "titans.json").write_text(json.dumps(metadata))
+    (path / "titans.json").write_text(json.dumps(metadata))
     for cls in (ContinualModel, TitansModel):
         restored = cls.load_pretrained(path)
+        assert restored.config.attention_backend == restored.memories["0"].config.attention_backend == "sdpa"
         assert restored.config.mac_segment_length == (512 if version == 4 else 1)
         assert restored.memories["0"].config.chunk_size == {1: 1, 2: 7, 3: 1, 4: 16}[version]
     override = replace(tiny_model.config, mac_segment_length=37, attention_backend="sdpa")
@@ -243,22 +247,13 @@ def test_segment_snapshot_and_detach(tiny_model: TitansModel) -> None:
         assert state.memory[0].pending.shape[1] == 0
 
 
-def test_explicit_fa3_rejects_unsupported(tiny_model: TitansModel) -> None:
-    """Require an actionable error for explicit FA3 while auto accepts the same CPU input.
-
-    Args:
-        tiny_model: CPU decoder with a configurable attention backend.
-    """
-    tiny_model.config = replace(tiny_model.config, attention_backend="fa3")
-    with torch.no_grad(), pytest.raises(RuntimeError, match="CUDA.*sdpa"):
-        tiny_model._forward_tokens([7], tiny_model._new_state())
-    assert RuntimeConfig().attention_backend == TitansConfig().attention_backend == "auto"
-    with torch.no_grad():
-        tiny_model.config = replace(tiny_model.config, attention_backend=RuntimeConfig().attention_backend)
-        automatic = tiny_model._forward_tokens([7, 8, 9], tiny_model._new_state())
-        tiny_model.config = replace(tiny_model.config, attention_backend="sdpa")
-        reference = tiny_model._forward_tokens([7, 8, 9], tiny_model._new_state())
-    torch.testing.assert_close(automatic, reference, rtol=0, atol=0)
+def test_sdpa_default_and_auto_alias() -> None:
+    """Both constructors accept the old automatic setting and default to SDPA."""
+    for cls in (RuntimeConfig, TitansConfig):
+        assert cls().attention_backend == "sdpa"
+        cls(attention_backend="auto")
+        with pytest.raises(ValueError, match="PyTorch SDPA"):
+            cls(attention_backend="fa3")
 
 
 def test_generic_checkpoint_records_effective_chunk(tiny_model: TitansModel, tmp_path: Path) -> None:

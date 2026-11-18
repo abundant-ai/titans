@@ -12,7 +12,8 @@ from torch.nn import functional as F
 from titans.methods.titans import chunk_update, combine_read, mlp, project_tokens
 
 
-@torch.compile(fullgraph=True, dynamic=False)
+# Torch 2.9 can emit invalid Triton indices when it unrolls this short gate reduction.
+@torch.compile(fullgraph=True, dynamic=False, options={"unroll_reductions_threshold": 1})
 def compiled_chunk_update(
     weights: tuple[Tensor, ...], momentum: tuple[Tensor, ...], keys: Tensor, values: Tensor,
     alpha: Tensor, eta: Tensor, theta: Tensor,

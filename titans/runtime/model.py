@@ -176,13 +176,8 @@ class ContinualModel(nn.Module):
             raise RuntimeError("SGLang inference requires a CUDA model")
         if self.config.inference_backend != "auto":
             return self.config.inference_backend == "sglang"
-        if (device.type != "cuda" or self.config.attention_backend == "sdpa"
-                or self.backbone.dtype not in (torch.float16, torch.bfloat16)
-                or find_spec("sglang") is None):
-            return False
-        from titans.optim.gpu_ops import fa3_device_unavailable
-
-        return fa3_device_unavailable(device) is None
+        return (device.type == "cuda" and self.backbone.dtype in (torch.float16, torch.bfloat16)
+                and find_spec("sglang") is not None)
 
     def _serving_backend(self) -> "SGLangBackend":
         """Start the SGLang worker lazily for the current trained-model revision.
@@ -352,21 +347,16 @@ class ContinualModel(nn.Module):
         if cache is not None:
             key_positions = torch.cat((cache.positions, positions))
         window = self.config.attention_window if window is None else window
-        backend = self.config.attention_backend
         prefix_count = min(self.config.persistent_tokens, next_position)
-        prefix_only = next_position <= self.config.persistent_tokens
-
-        def mask() -> Tensor:
-            """Return the causal mask including globally visible persistent tokens."""
-            return (key_positions[None, :] <= positions[:, None]) & (
-                (key_positions[None, :] < self.config.persistent_tokens)
-                | (key_positions[None, :] > positions[:, None] - window)
-            )
+        allowed = (key_positions[None, :] <= positions[:, None]) & (
+            (key_positions[None, :] < self.config.persistent_tokens)
+            | (key_positions[None, :] > positions[:, None] - window)
+        )
 
         # Compiling the complete CUDA SDPA wrapper produced nonfinite Qwen
         # gradients in PyTorch 2.9.1. Native fused attention and Liger RoPE retain
         # their autograd rules; CPU attention and the memory core still use JIT.
-        if self.config.compile_kernels and backend != "fa3" and hidden.device.type != "cuda":
+        if self.config.compile_kernels and hidden.device.type != "cuda":
             from titans.optim.kernels import compiled_attention
 
             empty_shape = (hidden.shape[0], attention.k_proj.out_features // attention.head_dim,
@@ -378,7 +368,7 @@ class ContinualModel(nn.Module):
                 attention.v_proj.weight, attention.o_proj.weight,
                 attention.q_proj.bias, attention.k_proj.bias,
                 attention.v_proj.bias, attention.o_proj.bias,
-                *rotary, old_keys, old_values, mask(), attention.head_dim, attention.scaling,
+                *rotary, old_keys, old_values, allowed, attention.head_dim, attention.scaling,
             )
         else:
             shape = (*hidden.shape[:-1], -1, attention.head_dim)
@@ -396,34 +386,10 @@ class ContinualModel(nn.Module):
                 key = torch.cat((cache.keys, key), -2)
                 value = torch.cat((cache.values, value), -2)
             groups = query.shape[1] // key.shape[1]
-            use_fa3 = False
-            if backend == "fa3" or (backend == "auto" and query.is_cuda):
-                from titans.optim.gpu_ops import fa3_unavailable
-
-                reason = fa3_unavailable(query, key, value, prefix_count, prefix_only)
-                if reason and backend == "fa3":
-                    raise RuntimeError(f"FA3 unavailable: {reason}. Use attention_backend='sdpa' or 'auto'.")
-                use_fa3 = reason is None
-            if use_fa3:
-                from titans.optim.gpu_ops import flash_attention3
-
-                try:
-                    output = flash_attention3(
-                        query, key, value, prefix_count=prefix_count,
-                        window=window, scale=attention.scaling, prefix_only=prefix_only,
-                    )
-                except NotImplementedError as error:
-                    if backend == "fa3":
-                        raise RuntimeError(
-                            "The FA3 kernel does not support this attention operation. "
-                            "Use attention_backend='auto' or 'sdpa'."
-                        ) from error
-                    use_fa3 = False
-            if not use_fa3:
-                output = F.scaled_dot_product_attention(
-                    query, key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1),
-                    attn_mask=mask()[None, None], dropout_p=0.0, scale=attention.scaling,
-                )
+            output = F.scaled_dot_product_attention(
+                query, key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1),
+                attn_mask=allowed, scale=attention.scaling,
+            )
             output = attention.o_proj(output.transpose(1, 2).reshape(*hidden.shape[:-1], -1))
         tail_count = min(window - 1, key.shape[-2] - prefix_count)
         tail_start = key.shape[-2] - tail_count
@@ -863,6 +829,9 @@ class ContinualModel(nn.Module):
             adapter.update({f"connections.{key}": value.detach().cpu().contiguous()
                             for key, value in self.connections.state_dict().items()})
             adapter["persistent"] = self.persistent.detach().cpu().contiguous()
+            # Transformers reconstructs this nonpersistent buffer from config in FP32.
+            # A backbone explicitly cast to BF16 can have rounded frequencies.
+            adapter["rotary_inv_freq"] = self.backbone.model.rotary_emb.inv_freq.detach().cpu().contiguous()
             save_file(adapter, temporary / "memory.safetensors")
             from titans.methods.titans import NeuralMemory
 
@@ -914,6 +883,7 @@ class ContinualModel(nn.Module):
         if metadata["format_version"] not in (1, 2, 3, 4):
             raise ValueError("Unsupported Titans checkpoint format")
         settings = metadata["config"]
+        settings.pop("attention_backend", None)  # A checkpoint can move between runtimes.
         settings["memory_layers"] = tuple(settings["memory_layers"])
         if metadata["format_version"] < 4:
             settings["mac_segment_length"] = 1
@@ -944,6 +914,7 @@ class ContinualModel(nn.Module):
             def restore_memory(hidden_size: int) -> NeuralMemory:
                 """Restore the next configured memory layer at the decoder's hidden width."""
                 options = dict(next(layer_settings))
+                options.pop("attention_backend", None)
                 options["memory_layers"] = tuple(options["memory_layers"])
                 return NeuralMemory(hidden_size, TitansConfig(**options))
 
@@ -992,5 +963,7 @@ class ContinualModel(nn.Module):
         }, strict=True)
         with torch.no_grad():
             model.persistent.copy_(adapter["persistent"])
+            if "rotary_inv_freq" in adapter:
+                model.backbone.model.rotary_emb.inv_freq.copy_(adapter["rotary_inv_freq"])
         model._revision = int(metadata["revision"])
         return model

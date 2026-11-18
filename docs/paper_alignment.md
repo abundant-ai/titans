@@ -83,8 +83,8 @@ point tolerance; changing the memory chunk size changes the update rule.
 The CPU suite compares depths 1–3, ordinary and extreme gates, nonzero momentum,
 outer derivatives, causality, arbitrary input splits, deep cloning, training
 budgets and checkpoint round trips. Compiled kernels are checked separately
-against the same autograd oracle. The GPU suite compares FA3 against an explicit
-SDPA mask and compares Liger losses and gradients with PyTorch. CUDA graph checks
+against the same autograd oracle. A CPU test compares cached SDPA outputs and gradients with an explicit per-query
+softmax over the visible keys. GPU checks compare Liger losses and gradients with PyTorch. CUDA graph checks
 compare logits, caches, fast weights, momentum, pending writes and convolution
 history with the ordinary forward path across commits and stream switches.
 

@@ -3,7 +3,6 @@
 import statistics
 import time
 from dataclasses import replace
-from unittest.mock import patch
 
 import torch
 from tokenizers import Tokenizer
@@ -14,7 +13,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import LlamaForCausalLM, PreTrainedTokenizerFast
 
 from titans import TitansConfig, TitansModel
-from titans.optim.gpu_ops import flash_attention3, liger_loss
+from titans.optim.gpu_ops import liger_loss
 from titans.runtime.backbones import scratch_config
 
 
@@ -42,8 +41,7 @@ def run_pretraining_checks() -> dict[str, object]:
     gradient_errors = {}
     with sdpa_kernel(SDPBackend.MATH):
         for fused in (False, True):
-            model.config = replace(config, use_liger=fused, compile_kernels=fused,
-                                   attention_backend="auto" if fused else "sdpa")
+            model.config = replace(config, use_liger=fused, compile_kernels=fused)
             for memory in model.memories.values():
                 memory.config = model.config
             model.zero_grad(set_to_none=True)
@@ -76,36 +74,13 @@ def run_pretraining_checks() -> dict[str, object]:
     model.eval()
     for memory in model.memories.values():
         memory.config = config
-    with torch.no_grad():
-        output_fp32 = []
-        for backend in ("auto", "sdpa"):
-            model.config = replace(config, attention_backend=backend)
-            output_fp32.append(model._forward_tokens(ids, model._new_state(), last_only=True))
-        torch.testing.assert_close(*output_fp32, rtol=0, atol=0)
-        del output_fp32
     metrics = {}
     reference: Tensor | None = None
-    sdpa: Tensor | None = None
-    for label, stride, backend in (("tokenwise_sdpa", 1, "sdpa"), ("block_sdpa", 256, "sdpa"),
-                                   ("block_fa3", config.prefill_chunk_size, config.attention_backend)):
-        model.config = replace(config, prefill_chunk_size=stride, attention_backend=backend)
+    for label, stride in (("tokenwise_sdpa", 1), ("block_sdpa", config.prefill_chunk_size)):
+        model.config = replace(config, prefill_chunk_size=stride)
         with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
             state = model._new_state()
-            with patch("titans.optim.gpu_ops.flash_attention3", wraps=flash_attention3) as kernel:
-                outputs = model._forward_tokens(ids, state).float()
-            fa3_calls = kernel.call_count
-            del kernel  # Release retained Q/K/V arguments before measuring peak allocation.
-            if label == "block_fa3":
-                assert backend == "auto"
-                assert fa3_calls == len(model.backbone.model.layers)
-                assert sdpa is not None
-                with patch("titans.optim.gpu_ops.flash_attention3", side_effect=NotImplementedError):
-                    fallback = model._forward_tokens(ids, model._new_state()).float()
-                torch.testing.assert_close(fallback.cpu(), sdpa, rtol=0, atol=0)
-                del fallback
-            elif label == "block_sdpa":
-                assert fa3_calls == 0
-                sdpa = outputs.cpu()
+            outputs = model._forward_tokens(ids, state).float()
             if reference is None:
                 reference = outputs.clone()
             torch.testing.assert_close(outputs, reference, rtol=0.06, atol=0.12)
@@ -132,7 +107,7 @@ def run_pretraining_checks() -> dict[str, object]:
                 del state
             metrics[label] = {"tokens_per_second": len(ids) / statistics.median(times),
                               "peak_allocated_bytes": peak, "head_calls": len(head_calls),
-                              "max_logit_error": errors, "prefill_fa3_calls": fa3_calls}
+                              "max_logit_error": errors}
     return {"real_tokens": len(ids), "segment": 512, "write_chunk": 16,
-            "gradient_relative_l2": gradient_errors, "fp32_auto_sdpa_equal": True,
+            "gradient_relative_l2": gradient_errors,
             "eager_loss": losses[0], "liger_loss": losses[1], "prefill": metrics}

@@ -76,7 +76,7 @@ def profile_decode(model: TitansModel, tokens: list[int]) -> dict[str, object]:
 
 
 def main() -> None:
-    """Run warmup, source-preservation checks, and timed SGLang/FA3 requests."""
+    """Run warmup, source-preservation checks, and timed SGLang/SDPA requests."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=5)
@@ -89,7 +89,7 @@ def main() -> None:
         raise RuntimeError("This benchmark explicitly requires an H100")
     config = TitansConfig(memory_dim=64, memory_hidden_dim=128, memory_layers=(0, 6, 12, 18),
                           chunk_size=32, prefill_chunk_size=256, attention_window=512,
-                          persistent_tokens=4, inference_backend="sglang", attention_backend="fa3",
+                          persistent_tokens=4, inference_backend="sglang",
                           compile_kernels=True, use_liger=True)
     started = time.perf_counter()
     model = TitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16,

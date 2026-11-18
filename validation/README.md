@@ -1,5 +1,7 @@
 # Validation record
 
+The reports below describe the revisions that produced them. Measurements with the former attention backend predate the switch to SDPA for inference.
+
 ## Joint pretraining
 
 The joint-training extension passes **131 CPU tests**, Ruff, and an isolated

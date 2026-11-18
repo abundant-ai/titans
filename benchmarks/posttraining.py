@@ -50,7 +50,7 @@ def main() -> None:
         raise RuntimeError("This benchmark explicitly requires an H100")
     config = TitansConfig(memory_dim=64, memory_hidden_dim=128, memory_layers=(0, 6, 12, 18),
                           chunk_size=32, prefill_chunk_size=256, attention_window=512,
-                          persistent_tokens=4, inference_backend="sglang", attention_backend="fa3",
+                          persistent_tokens=4, inference_backend="sglang",
                           compile_kernels=True, use_liger=True)
     model = TimedTitansModel.from_pretrained(args.model, config, device="cuda", dtype=torch.bfloat16,
                                               connection_factory=residual_connection)
@@ -105,7 +105,7 @@ def main() -> None:
         "backbone_parameters": sum(p.numel() for p in model.backbone.parameters()),
         "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "scope": "synthetic repeated document LM; frozen backbone; throughput, not learning quality",
-        "attention": "autograd SDPA with cuDNN excluded during training; FA3 during inference only",
+        "attention": "PyTorch SDPA for training and inference, with cuDNN excluded during training",
         "runs": results,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

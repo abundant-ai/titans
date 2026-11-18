@@ -26,19 +26,16 @@ def inspect_runtime() -> dict[str, str]:
     """Verify the allocated GPU and installed kernel interfaces before benchmarking.
 
     Returns:
-        Device identity, package versions and the FA3 entry point's signature.
+        Device identity and installed runtime versions.
     """
     import importlib.metadata
-    import inspect
 
     import torch
-    from sgl_kernel.flash_attn import flash_attn_with_kvcache
 
     return {
         "gpu": torch.cuda.get_device_name(), "torch": str(torch.__version__),
         "cuda": str(torch.version.cuda), "sglang": importlib.metadata.version("sglang"),
         "liger_kernel": importlib.metadata.version("liger-kernel"),
-        "fa3_signature": str(inspect.signature(flash_attn_with_kvcache)),
     }
 
 

@@ -29,7 +29,7 @@ uses the official `lmsysorg/sglang:v0.5.7` image and adds Liger and pytest.
 
 ```python
 import torch
-from titans import TitansConfig, TitansModel
+from titans import TitansConfig, TitansModel, residual_connection
 
 model = TitansModel.from_pretrained(
     "Qwen/Qwen2.5-1.5B-Instruct",
@@ -40,11 +40,11 @@ model = TitansModel.from_pretrained(
         chunk_size=32,
         prefill_chunk_size=256,
         inference_backend="sglang",
-        attention_backend="fa3",
         compile_kernels=True,
         use_liger=True,
         cuda_graphs=True,
     ),
+    connection_factory=residual_connection,
     device="cuda",
     dtype=torch.bfloat16,
 )
@@ -115,27 +115,24 @@ tensor state remains in the worker. Deterministic SGLang inference enables the
 request's sampling seed; repeated requests with the same state and seed are checked
 on the H100. This flag also selects SGLang's batch-invariant kernels.
 
-## FlashAttention 3
+## Attention
 
-Inference calls SGLang's FA3 kernel with `ver=3`. Ordinary tokens use causal sliding
-attention. Persistent prefix tokens remain globally visible: their attention
-partition is merged with the FA3 local partition using log-sum-exp normalization.
-This preserves the explicit local-plus-prefix mask; dropping the prefix or using
-full-history attention would change the model.
+Every Titans layer uses PyTorch scaled dot-product attention for training, prefill
+and decoding. Each query can attend to earlier persistent prefix positions and
+the current position. In ordinary layers it can also attend to the preceding
+`attention_window - 1` real tokens. MAC uses causal attention over the interleaved
+retrieval and token positions in the current segment. Cached blocks use an explicit
+mask based on the stored key positions, including when the query and cache lengths differ.
 
-Both model constructors default to block prefill with `attention_backend="auto"`.
-They prefer FA3 for eligible inference blocks and use PyTorch SDPA otherwise.
-The runtime checks the projected Q/K/V dtypes, Hopper support,
-the installed FA3 kernel, the causal cache layout and autograd mode. Explicit `fa3` reports the unsupported condition. Training with `auto` uses
-autograd-capable SDPA with cuDNN excluded; SGLang's cached FA3 entry point is used
-for inference. A pretrained Qwen training run produced NaNs in
-`ScaledDotProductCudnnAttentionBackward0`, including with JIT and Liger disabled.
-The reference run completed with finite gradients when cuDNN was excluded,
-without changing the memory settings or 2,048-token backpropagation window.
-The backend restriction is scoped to `fit` and applies to both backbones.
-[FA3 hardware requirements](https://github.com/Dao-AILab/flash-attention#flashattention-3-beta-release)
-and [SGLang's external-model registry](https://github.com/sgl-project/sglang/blob/v0.5.7/python/sglang/srt/models/registry.py)
-are upstream dependencies, not additional Titans algorithm requirements.
+`attention_backend="sdpa"` is the default. Existing callers can still pass `"auto"`.
+Loading a checkpoint uses SDPA regardless of which attention backend saved it.
+New checkpoints store the backbone's rotary frequencies so a BF16 round trip preserves the same positions and phases.
+CUDA training excludes cuDNN SDPA because its backward pass produced nonfinite
+gradients on pretrained Qwen with the prefix and sliding-window mask.
+
+The residual SGLang adapter computes the same SDPA in its model worker.
+SGLang 0.5.7 requires a separate engine backend for deterministic sampling.
+The adapter selects `triton` for that setting and owns the attention computation and KV cache.
 
 ## Reproduce the measurements
 
@@ -189,10 +186,9 @@ uvx modal run --env testing checks/modal_inference.py --output validation/gpu_in
 ```
 
 This manually invoked job requests one L4 with a 30-minute execution limit.
-It runs eight portable checks from `checks/gpu_inference.py`: kernel output parity,
+It runs portable checks from `checks/gpu_inference.py`: kernel output parity,
 compiled memory transitions, both methods' streaming and answer isolation, and
-untrained checkpoint restoration. Add `--hopper` to run all 17 checks on one H200,
-including FA3 and CUDA graph state equivalence. No post-training, QA feedback update, backward
+untrained checkpoint restoration. Add `--hopper` to include CUDA graph state equivalence on one H200. No post-training, QA feedback update, backward
 pass or optimizer step runs. Titans' analytic test-time memory transition remains
 part of document ingestion; shared parameters remain unchanged.
 

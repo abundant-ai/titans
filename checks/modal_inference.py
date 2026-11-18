@@ -22,7 +22,7 @@ def run_checks(hopper: bool) -> dict[str, object]:
     """Execute the selected inference checks, without invoking training.
 
     Args:
-        hopper: Include FA3 and the CUDA graphs that depend on its Hopper kernels.
+        hopper: Include the CUDA graph replay checks on the larger GPU.
 
     Returns:
         Device identity, package versions, source hashes, test counts and full output.
@@ -49,7 +49,7 @@ def run_checks(hopper: bool) -> dict[str, object]:
     command = [sys.executable, "-m", "pytest", "/workspace/checks/gpu_inference.py",
                "-vv", "--tb=short", "--show-capture=no", f"--junitxml={junit}"]
     if not hopper:
-        command += ["-k", "not fa3 and not cuda_graphs"]
+        command += ["-k", "not cuda_graphs"]
     started = time.perf_counter()
     lines: list[str] = []
     with subprocess.Popen(command, cwd="/workspace", stdout=subprocess.PIPE,
@@ -82,7 +82,7 @@ def verify_inference() -> dict[str, object]:
     """Run portable inference checks on one L4.
 
     Returns:
-        The evidence report for eight portable inference checks.
+        The evidence report for portable inference checks.
     """
     return run_checks(hopper=False)
 
@@ -90,10 +90,10 @@ def verify_inference() -> dict[str, object]:
 @app.function(image=image, gpu="H200", cpu=4, memory=16384, timeout=1800,
               max_containers=1, scaledown_window=30)
 def verify_hopper() -> dict[str, object]:
-    """Run all inference checks, including FA3 and CUDA graphs, on one H200.
+    """Run all inference checks, including SDPA CUDA graph replay, on one H200.
 
     Returns:
-        The evidence report for all seventeen inference checks.
+        The evidence report for the full inference suite.
     """
     return run_checks(hopper=True)
 
@@ -104,7 +104,7 @@ def main(output: str = "validation/gpu_inference.json", hopper: bool = False) ->
 
     Args:
         output: Local report path; no model or trained checkpoint is produced.
-        hopper: Include Hopper-specific checks; otherwise use the smaller L4 allocation.
+        hopper: Include graph replay on H200. The portable suite runs on L4.
 
     Raises:
         RuntimeError: A check failed or was skipped on the allocated GPU.

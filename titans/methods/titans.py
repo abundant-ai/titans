@@ -152,7 +152,8 @@ def chunk_update(
     weight_coeff = theta * h
     momentum_coeff = theta * suffix_products(eta)
     old_weight_coeff = beta.prod(-1)[:, None, None]
-    old_momentum_coeff = (eta[:, 0] * h[:, 0])[:, None, None]
+    # Incoming momentum contributes at each write, then decays through later forget gates.
+    old_momentum_coeff = (eta.cumprod(-1) * beta_suffix).sum(-1)[:, None, None]
     final_momentum_coeff = eta.prod(-1)[:, None, None]
 
     activations = [keys]

@@ -63,7 +63,6 @@ class GraphDecoder:
         length = config.persistent_tokens + config.attention_window - 1
         return (
             config.cuda_graphs and ids.device.type == "cuda" and ids.numel() == 1
-            and config.attention_backend in ("auto", "fa3")
             and len(state._attention) == len(self.model.backbone.model.layers)
             and all(cache.keys.shape[-2] == length for cache in state._attention.values())
             and len({memory.pending.shape[1] for memory in state._memory.values()}) == 1

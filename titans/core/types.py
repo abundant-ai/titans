@@ -53,7 +53,7 @@ class RuntimeConfig:
     compile_kernels: bool = True
     prefill_chunk_size: int = 256
     inference_backend: Literal["auto", "torch", "sglang"] = "torch"
-    attention_backend: Literal["auto", "sdpa", "fa3"] = "auto"
+    attention_backend: Literal["sdpa", "auto"] = "sdpa"
     use_liger: bool = False
     cuda_graphs: bool = True
     mac_segment_length: int = field(default=512, kw_only=True)
@@ -70,8 +70,8 @@ class RuntimeConfig:
             raise ValueError("memory_layers must contain unique indices")
         if self.inference_backend not in ("auto", "torch", "sglang"):
             raise ValueError("Unknown inference backend")
-        if self.attention_backend not in ("auto", "sdpa", "fa3"):
-            raise ValueError("Unknown attention backend")
+        if self.attention_backend not in ("sdpa", "auto"):
+            raise ValueError("Titans uses PyTorch SDPA. Set attention_backend to 'sdpa' or 'auto'.")
 
 
 @dataclass(frozen=True)

@@ -99,8 +99,8 @@ uvx modal run --env testing checks/modal_pretraining.py \
 
 The job compares eager and Liger forward/backward passes on the fixed scratch
 decoder with 33 deterministic token IDs. It measures peak allocated GPU memory,
-prefill throughput and vocabulary-head calls for tokenwise SDPA, block SDPA and
-block FA3 on the same weights. Optimizer-step tests run on CPU. GPU checks are
+prefill throughput and vocabulary-head calls for tokenwise and block SDPA on the
+same weights. Optimizer-step tests run on CPU. GPU checks are
 manual and outside CI.
 
 The [H100 report](../validation/h100_segmented_mac.json) includes the fixed-input

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 import torch
-from torch.nn import functional as F
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
 from examples.linear_memory import LinearMemory
@@ -22,7 +21,7 @@ from titans import (
 )
 from titans.methods.titans import chunk_update
 from titans.optim.cuda_graphs import GraphDecoder
-from titans.optim.gpu_ops import flash_attention3, liger_norm, liger_rotary
+from titans.optim.gpu_ops import liger_norm, liger_rotary
 from titans.optim.kernels import compiled_chunk_update
 from titans.runtime.connections import residual_connection
 from titans.runtime.state import StreamState
@@ -83,48 +82,6 @@ def test_generic_cuda_inference_and_restore(
     expected = model._forward_tokens([7, 10, 13], model.start_stream())
     actual = restored._forward_tokens([7, 10, 13], restored.start_stream())
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("prefix", [0, 4])
-@pytest.mark.parametrize("heads,kv_heads,head_dim", [(4, 2, 64), (12, 2, 128)])
-def test_fa3_local_attention_matches_sdpa(
-    prefix: int, heads: int, kv_heads: int, head_dim: int,
-) -> None:
-    """Compare FA3 with a causal mask for Llama and Qwen attention dimensions.
-
-    Args:
-        prefix: Number of persistent tokens.
-        heads: Query head count.
-        kv_heads: Key/value head count.
-        head_dim: Channels per head, including Qwen2.5's 128.
-    """
-    torch.manual_seed(24)
-    query = torch.randn(1, heads, 5, head_dim, device="cuda", dtype=torch.bfloat16)
-    keys = torch.randn(1, kv_heads, prefix + 7 + 5, head_dim, device="cuda", dtype=torch.bfloat16)
-    values = torch.randn_like(keys)
-    qpos = torch.arange(prefix + 7, prefix + 12, device="cuda")
-    kpos = torch.arange(prefix + 12, device="cuda")
-    mask = (kpos[None] <= qpos[:, None]) & ((kpos[None] < prefix) | (kpos[None] > qpos[:, None] - 8))
-    with torch.no_grad():
-        expected = F.scaled_dot_product_attention(query, keys.repeat_interleave(heads // kv_heads, 1),
-                                                  values.repeat_interleave(heads // kv_heads, 1),
-                                                  attn_mask=mask[None, None], scale=head_dim**-0.5)
-        actual = flash_attention3(query, keys, values, prefix_count=prefix,
-                                  window=8, scale=head_dim**-0.5, prefix_only=False)
-    torch.testing.assert_close(actual, expected, rtol=0.03, atol=0.01)
-
-
-def test_fa3_persistent_initialization_is_causal() -> None:
-    """The learned prefix's own forward pass must retain causal attention."""
-    query = torch.randn(1, 4, 4, 64, device="cuda", dtype=torch.bfloat16)
-    key = torch.randn(1, 2, 4, 64, device="cuda", dtype=torch.bfloat16)
-    value = torch.randn_like(key)
-    with torch.no_grad():
-        expected = F.scaled_dot_product_attention(query, key.repeat_interleave(2, 1),
-                                                  value.repeat_interleave(2, 1), is_causal=True)
-        actual = flash_attention3(query, key, value, prefix_count=4, window=8,
-                                  scale=0.125, prefix_only=True)
-    torch.testing.assert_close(actual, expected, rtol=0.03, atol=0.01)
 
 
 @torch.no_grad()
@@ -207,7 +164,7 @@ def test_cuda_graphs_preserve_streams_and_chunk_commits(tiny_model: TitansModel,
         num_attention_heads=2, num_key_value_heads=1, eos_token_id=2,
     )).to(device="cuda", dtype=torch.bfloat16)
     config = replace(tiny_model.config, compile_kernels=True, use_liger=True,
-                     persistent_tokens=prefix, inference_backend="torch", attention_backend="fa3")
+                     persistent_tokens=prefix, inference_backend="torch")
     model = TitansModel(backbone, tiny_model.tokenizer, config,
                         connection_factory=residual_connection)
     decoder = GraphDecoder(model)

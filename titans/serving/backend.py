@@ -36,9 +36,7 @@ class SGLangBackend:
         self.model = model
         dtype = model.backbone.model.embed_tokens.weight.dtype
         if dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError("Load the CUDA backbone with dtype=torch.bfloat16 or torch.float16 for FA3")
-        if model.config.attention_backend == "sdpa":
-            raise ValueError("SGLang Titans requires FA3; select the torch backend for SDPA")
+            raise ValueError("Load the CUDA backbone with dtype=torch.bfloat16 or torch.float16 for SGLang")
         ModelRegistry.models["TitansForCausalLM"] = TitansForCausalLM
         self.directory = Path(tempfile.mkdtemp(prefix="titans-sglang-"))
         self.processor = TitansMetadataProcessor.to_str()
@@ -56,10 +54,13 @@ class SGLangBackend:
                 self.engine = sgl.Engine(
                     model_path=str(checkpoint / "backbone"), dtype=str(dtype).removeprefix("torch."),
                     tp_size=1,
-                    attention_backend="fa3", disable_radix_cache=True, disable_cuda_graph=True,
+                    # SGLang requires a scheduler backend for seeded sampling.
+                    # The external Titans model computes all attention with PyTorch SDPA.
+                    attention_backend="triton", disable_radix_cache=True, disable_cuda_graph=True,
                     disable_overlap_schedule=True, enable_custom_logit_processor=True,
                     enable_deterministic_inference=True,
-                    max_running_requests=1, chunked_prefill_size=-1, context_length=8192,
+                    max_running_requests=1, chunked_prefill_size=-1,
+                    context_length=min(8192, model.backbone.config.max_position_embeddings),
                     max_total_tokens=8192, mem_fraction_static=0.35, log_level="warning",
                 )
             finally:

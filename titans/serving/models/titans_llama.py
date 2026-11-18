@@ -61,7 +61,6 @@ class TitansForCausalLM(nn.Module):
         settings = dict(config.titans_settings)
         settings["memory_layers"] = tuple(settings["memory_layers"])
         settings["inference_backend"] = "torch"
-        settings["attention_backend"] = "fa3"
         self.adapter_path = Path(config.titans_adapter_path)
         tokenizer = AutoTokenizer.from_pretrained(config._name_or_path, local_files_only=True)
         self.titans = TitansModel(
@@ -102,6 +101,8 @@ class TitansForCausalLM(nn.Module):
             if key.startswith("memories.")
         }, strict=True)
         self.titans.persistent.copy_(adapter["persistent"])
+        if "rotary_inv_freq" in adapter:
+            self.titans.backbone.model.rotary_emb.inv_freq.copy_(adapter["rotary_inv_freq"])
 
     @torch.no_grad()
     def forward(
