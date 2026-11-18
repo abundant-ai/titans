@@ -66,7 +66,8 @@ def test_generic_cuda_inference_and_restore(
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
             assert bool(torch.isfinite(actual).all().item())
     for layer, cache in state._attention.items():
-        assert cache.keys.shape[2] <= settings.attention_window + settings.persistent_tokens
+        expected_pairs = 2 * (state.tokens_processed % settings.mac_segment_length)
+        assert cache.keys.shape[2] == settings.persistent_tokens + expected_pairs
         torch.testing.assert_close(cache.keys, source._attention[layer].keys, rtol=0, atol=0)
     fork = model.clone_state(state)
     model.ingest(Document("new", "Alice lives in Rome"), fork)

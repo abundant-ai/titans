@@ -79,23 +79,29 @@ checkpointed `document_qa` routing. `learn(..., train_backbone=True)` exposes th
 for explicitly released QA feedback. Prediction never receives hidden targets.
 
 Memory architecture, connection factory, inner transition, data generator and
-objective remain configurable. MAC remains the default with one real token per
-segment. This version does not reproduce the paper's larger MAC segments.
+objective remain configurable. The default MAC segment holds 512 real tokens and the default
+memory write chunk holds 16. Standard training on BF16-capable CUDA uses BF16
+autocast for backbone operations. With default storage, parameters, AdamW state,
+fast weights, momentum and loss reductions use FP32. Explicit storage dtypes
+and custom update rules retain their original ownership.
+
+At a training detach, the trainer saves the carried logits before stepping the
+optimizer. The next supervised target scores that prediction once. Autograd
+continues from the next live prediction. Fused Liger loss uses hidden states
+within the live window.
 
 ## Manual H100 validation
 
 ```bash
 uvx modal run --env testing checks/modal_pretraining.py \
-  --output validation/h100_pretraining.json
+  --output validation/h100_segmented_mac.json
 ```
 
-This separate, ad hoc job uses the full fixed scratch decoder and the real Llama
-2 tokenizer. It checks gradients through inner writes, eager versus compiled/Liger
-backbone and memory gradients in FP32, three joint AdamW steps with truncation and fused
-loss, and checkpoint restoration. Its JSON report includes the GPU, software
-versions and source hashes. It is outside default pytest discovery and CI.
-The existing `checks/modal_inference.py` remains inference-only.
+The job compares eager and Liger forward/backward passes on the fixed scratch
+decoder with 33 deterministic token IDs. It measures peak allocated GPU memory,
+prefill throughput and vocabulary-head calls for tokenwise SDPA, block SDPA and
+block FA3 on the same weights. Optimizer-step tests run on CPU. GPU checks are
+manual and outside CI.
 
-These checks establish execution and gradient correctness on a short synthetic
-stream. They do not establish convergence, long-range retention, throughput for
-large unrolls, or BABILong quality.
+The [H100 report](../validation/h100_segmented_mac.json) includes the fixed-input
+losses, gradient differences, throughput, peak allocation and source hashes.

@@ -5,7 +5,8 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Iterable
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, final
 
@@ -66,6 +67,7 @@ class ContinualModel(nn.Module):
     """
 
     supports_sglang = False
+    _config_type = RuntimeConfig
 
     def __init__(
         self,
@@ -113,8 +115,10 @@ class ContinualModel(nn.Module):
         if memory_factory is None and memory_architecture is None:
             from titans.methods.titans import TitansArchitecture, TitansConfig
 
-            memory_architecture = TitansArchitecture(TitansConfig(
-                chunk_size=1, compile_kernels=config.compile_kernels))
+            memory_config = config if isinstance(config, TitansConfig) else TitansConfig(
+                compile_kernels=config.compile_kernels,
+            )
+            memory_architecture = TitansArchitecture(memory_config)
         architecture = memory_architecture or memory_factory
         assert architecture is not None
         if connection_factory is None:
@@ -127,10 +131,15 @@ class ContinualModel(nn.Module):
         }).to(device=parameter.device, dtype=parameter.dtype)
         if len({id(module) for module in self.connections.values()}) != len(config.memory_layers):
             raise ValueError("connection_factory must create independent modules per layer")
+        from titans.methods.titans import TitansMACConnection
+
+        self._mac_layers = {int(i) for i, c in self.connections.items()
+                            if type(c) is TitansMACConnection}
+        custom = [c for i, c in self.connections.items() if int(i) not in self._mac_layers]
         if any(c.max_context_tokens < 0 or c.max_context_tokens + 1 > config.attention_window
-               for c in self.connections.values()):
+               for c in custom):
             raise ValueError("Connection context must fit inside attention_window")
-        self._contextual_connections = any(c.max_context_tokens for c in self.connections.values())
+        self._custom_context = any(c.max_context_tokens for c in custom)
         self.memories = nn.ModuleDict({
             str(index): architecture(backbone.config.hidden_size)
             for index in config.memory_layers
@@ -165,9 +174,15 @@ class ContinualModel(nn.Module):
         device = self.backbone.model.embed_tokens.weight.device
         if self.config.inference_backend == "sglang" and device.type != "cuda":
             raise RuntimeError("SGLang inference requires a CUDA model")
-        return self.config.inference_backend == "sglang" or (
-            self.config.inference_backend == "auto" and device.type == "cuda"
-        )
+        if self.config.inference_backend != "auto":
+            return self.config.inference_backend == "sglang"
+        if (device.type != "cuda" or self.config.attention_backend == "sdpa"
+                or self.backbone.dtype not in (torch.float16, torch.bfloat16)
+                or find_spec("sglang") is None):
+            return False
+        from titans.optim.gpu_ops import fa3_device_unavailable
+
+        return fa3_device_unavailable(device) is None
 
     def _serving_backend(self) -> "SGLangBackend":
         """Start the SGLang worker lazily for the current trained-model revision.
@@ -288,8 +303,12 @@ class ContinualModel(nn.Module):
                for tensor in memory.tensors()):
             raise ValueError("Model moved devices; start a new stream")
 
-    def _new_state(self) -> StreamState:
+    def _new_state(self, *, prefix_hidden_only: bool = False) -> StreamState:
         """Initialize a stream and its learned persistent prefix.
+
+        Args:
+            prefix_hidden_only: Skip the prefix vocabulary projection when the caller
+                consumes its hidden state or immediately replaces its prediction.
 
         Returns:
             An empty document stream. Prefix tokens do not count toward the
@@ -299,7 +318,8 @@ class ContinualModel(nn.Module):
         for key, memory in self.memories.items():
             state._memory[int(key)] = memory.initial_state()
         if self.config.persistent_tokens:
-            self._forward_embeddings(self.persistent, state, write=False, last_only=True)
+            self._forward_embeddings(self.persistent, state, write=False, last_only=True,
+                                     return_hidden=prefix_hidden_only)
         return state
 
     def _local_attention(
@@ -310,6 +330,7 @@ class ContinualModel(nn.Module):
         rotary: tuple[Tensor, Tensor],
         cache: AttentionState | None,
         next_position: int,
+        window: int | None = None,
     ) -> tuple[Tensor, AttentionState]:
         """Run causal SDPA while retaining only persistent and recent grouped KV.
 
@@ -319,6 +340,7 @@ class ContinualModel(nn.Module):
             positions: Absolute positions for this chunk, shaped [tokens].
             rotary: Cosine and sine tensors from the host's RoPE implementation.
             cache: Bounded cache from the preceding call, or None.
+            window: Local attention span in this layer's position units.
             next_position: Python integer position following this block; avoids
                 device synchronization when selecting the retained cache.
 
@@ -329,21 +351,24 @@ class ContinualModel(nn.Module):
         key_positions = positions
         if cache is not None:
             key_positions = torch.cat((cache.positions, positions))
-        use_fa3 = (not torch.is_grad_enabled() and hidden.device.type == "cuda"
-                   and self.config.attention_backend in ("auto", "fa3"))
-        allowed = None
-        if not use_fa3:
-            allowed = (key_positions[None, :] <= positions[:, None]) & (
+        window = self.config.attention_window if window is None else window
+        backend = self.config.attention_backend
+        prefix_count = min(self.config.persistent_tokens, next_position)
+        prefix_only = next_position <= self.config.persistent_tokens
+
+        def mask() -> Tensor:
+            """Return the causal mask including globally visible persistent tokens."""
+            return (key_positions[None, :] <= positions[:, None]) & (
                 (key_positions[None, :] < self.config.persistent_tokens)
-                | (key_positions[None, :] > positions[:, None] - self.config.attention_window)
+                | (key_positions[None, :] > positions[:, None] - window)
             )
+
         # Compiling the complete CUDA SDPA wrapper produced nonfinite Qwen
         # gradients in PyTorch 2.9.1. Native fused attention and Liger RoPE retain
         # their autograd rules; CPU attention and the memory core still use JIT.
-        if self.config.compile_kernels and not use_fa3 and hidden.device.type != "cuda":
+        if self.config.compile_kernels and backend != "fa3" and hidden.device.type != "cuda":
             from titans.optim.kernels import compiled_attention
 
-            assert allowed is not None
             empty_shape = (hidden.shape[0], attention.k_proj.out_features // attention.head_dim,
                            0, attention.head_dim)
             old_keys = cache.keys if cache is not None else hidden.new_empty(empty_shape)
@@ -353,13 +378,14 @@ class ContinualModel(nn.Module):
                 attention.v_proj.weight, attention.o_proj.weight,
                 attention.q_proj.bias, attention.k_proj.bias,
                 attention.v_proj.bias, attention.o_proj.bias,
-                *rotary, old_keys, old_values, allowed, attention.head_dim, attention.scaling,
+                *rotary, old_keys, old_values, mask(), attention.head_dim, attention.scaling,
             )
         else:
             shape = (*hidden.shape[:-1], -1, attention.head_dim)
             query = attention.q_proj(hidden).view(shape).transpose(1, 2)
             key = attention.k_proj(hidden).view(shape).transpose(1, 2)
             value = attention.v_proj(hidden).view(shape).transpose(1, 2)
+            rotary = tuple(part.to(query.dtype) for part in rotary)
             if hidden.device.type == "cuda" and self.config.use_liger:
                 from titans.optim.gpu_ops import liger_rotary
 
@@ -370,22 +396,29 @@ class ContinualModel(nn.Module):
                 key = torch.cat((cache.keys, key), -2)
                 value = torch.cat((cache.values, value), -2)
             groups = query.shape[1] // key.shape[1]
+            use_fa3 = False
+            if backend == "fa3" or (backend == "auto" and query.is_cuda):
+                from titans.optim.gpu_ops import fa3_unavailable
+
+                reason = fa3_unavailable(query, key, value, prefix_count, prefix_only)
+                if reason and backend == "fa3":
+                    raise RuntimeError(f"FA3 unavailable: {reason}. Use attention_backend='sdpa' or 'auto'.")
+                use_fa3 = reason is None
             if use_fa3:
                 from titans.optim.gpu_ops import flash_attention3
 
                 output = flash_attention3(
-                    query, key, value, prefix_count=min(self.config.persistent_tokens, next_position),
-                    window=self.config.attention_window, scale=attention.scaling,
-                    prefix_only=next_position <= self.config.persistent_tokens,
+                    query, key, value, prefix_count=prefix_count,
+                    window=window, scale=attention.scaling,
+                    prefix_only=prefix_only,
                 )
             else:
                 output = F.scaled_dot_product_attention(
                     query, key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1),
-                    attn_mask=allowed[None, None], dropout_p=0.0, scale=attention.scaling,
+                    attn_mask=mask()[None, None], dropout_p=0.0, scale=attention.scaling,
                 )
             output = attention.o_proj(output.transpose(1, 2).reshape(*hidden.shape[:-1], -1))
-        prefix_count = min(self.config.persistent_tokens, next_position)
-        tail_count = min(self.config.attention_window - 1, key.shape[-2] - prefix_count)
+        tail_count = min(window - 1, key.shape[-2] - prefix_count)
         tail_start = key.shape[-2] - tail_count
         # Slices have known lengths on the host; boolean indexing here would
         # force a CUDA synchronization at every layer to discover output sizes.
@@ -412,10 +445,28 @@ class ContinualModel(nn.Module):
             Logits [1, tokens, vocabulary] for next-token prediction.
         """
         prefix_pass = state._position == 0 and embeddings.shape[1] == self.config.persistent_tokens
-        if self._contextual_connections and not prefix_pass and embeddings.shape[1] > 1:
-            outputs = [self._forward_embeddings(embeddings[:, i:i + 1], state, write=write,
-                                               last_only=last_only, return_hidden=return_hidden)
-                       for i in range(embeddings.shape[1])]
+        segment = self.config.mac_segment_length
+        offset = (state._position - self.config.persistent_tokens) % segment
+        block_limit = embeddings.shape[1]
+        if not prefix_pass:
+            if self._custom_context:
+                block_limit = 1
+            elif self._mac_layers:
+                block_limit = segment - offset
+        if embeddings.shape[1] > block_limit:
+            outputs = []
+            start = 0
+            while start < embeddings.shape[1]:
+                end = min(start + block_limit, embeddings.shape[1])
+                final_block = end == embeddings.shape[1]
+                output = self._forward_embeddings(
+                    embeddings[:, start:end], state, write=write, last_only=last_only,
+                    return_hidden=return_hidden or (last_only and not final_block),
+                )
+                if not last_only or final_block:
+                    outputs.append(output)
+                start = end
+                block_limit = 1 if self._custom_context else segment
             return outputs[-1] if last_only else torch.cat(outputs, dim=1)
         if positions is None:
             positions = torch.arange(
@@ -443,14 +494,21 @@ class ContinualModel(nn.Module):
                 connection = None
             plan = None
             if connection is not None:
-                plan = connection.prepare(context, self.memories[str(index)],
-                                          state._memory[index], write=write)
+                if index in self._mac_layers:
+                    if index not in state._retrieval:
+                        state._retrieval[index] = state._memory[index].copy()
+                    plan = connection._prepare_segment(context, self.memories[str(index)],
+                                                       state._retrieval[index])
+                else:
+                    plan = connection.prepare(context, self.memories[str(index)],
+                                              state._memory[index], write=write)
                 if (plan.memory_output.shape != hidden.shape
                         or plan.memory_output.device != hidden.device
                         or plan.memory_output.dtype != hidden.dtype):
                     raise ValueError("Memory read must preserve shape, device and dtype")
                 extra = plan.attention_input.shape[1] - hidden.shape[1]
-                if (not 0 <= extra <= connection.max_context_tokens
+                limit = hidden.shape[1] if index in self._mac_layers else connection.max_context_tokens
+                if (not 0 <= extra <= limit
                         or plan.attention_input.shape[0] != hidden.shape[0]
                         or plan.attention_input.shape[2:] != hidden.shape[2:]
                         or plan.attention_input.device != hidden.device
@@ -462,23 +520,27 @@ class ContinualModel(nn.Module):
             old_cache = state._attention.get(index)
             next_position = state._position + embeddings.shape[1]
             if connection is not None and connection.max_context_tokens:
-                # Virtual memory tokens occupy segment-local RoPE positions. Old
-                # segment KV is discarded; only persistent prefix KV survives.
+                # Paired MAC positions resume from the current segment offset.
                 prefix = self.config.persistent_tokens
                 count = embeddings.shape[1] + extra
-                local_positions = torch.arange(prefix, prefix + count, device=hidden.device)
+                first = prefix + (2 * offset if index in self._mac_layers else 0)
+                local_positions = torch.arange(first, first + count, device=hidden.device)
                 local_rotary = self.backbone.model.rotary_emb(plan.attention_input,
                                                               local_positions[None, :])
-                next_position = prefix + count
+                next_position = first + count
             attended, cache = self._local_attention(
                 layer, plan.attention_input if plan is not None else normalized,
                 local_positions, local_rotary, old_cache, next_position,
+                window=2 * segment if index in self._mac_layers and not prefix_pass else None,
             )
             if connection is not None and connection.max_context_tokens:
-                keep = cache.positions < self.config.persistent_tokens
-                cache = AttentionState(cache.keys[:, :, keep], cache.values[:, :, keep],
-                                       cache.positions[keep])
-                attended = attended[:, extra:]
+                mac = index in self._mac_layers
+                if not mac or offset + embeddings.shape[1] == segment:
+                    n = self.config.persistent_tokens
+                    cache = AttentionState(cache.keys[:, :, :n].clone(), cache.values[:, :, :n].clone(),
+                                           cache.positions[:n].clone())
+                    state._retrieval.pop(index, None)
+                attended = attended[:, 1::2] if mac else attended[:, extra:]
             state._attention[index] = cache
             if connection is not None and plan is not None:
                 hidden = connection.finish(context, attended, plan, self.memories[str(index)],
@@ -529,6 +591,7 @@ class ContinualModel(nn.Module):
                                            self.backbone.model.norm.variance_epsilon)
         else:
             normalized = self.backbone.model.norm(hidden)
+        state._boundary_prediction = False
         state._next_hidden = normalized[:, -1:].contiguous()
         logits = normalized if return_hidden else self.backbone.lm_head(normalized)
         state._position += embeddings.shape[1]
@@ -557,9 +620,12 @@ class ContinualModel(nn.Module):
         outputs: list[Tensor] = []
         for start in range(0, len(tokens), self.config.prefill_chunk_size):
             ids = torch.tensor([tokens[start:start + self.config.prefill_chunk_size]], device=device)
-            outputs.append(self._forward_embeddings(self.backbone.model.embed_tokens(ids), state,
-                                                    write=write, last_only=last_only,
-                                                    return_hidden=return_hidden))
+            final_block = start + ids.shape[1] == len(tokens)
+            output = self._forward_embeddings(self.backbone.model.embed_tokens(ids), state,
+                                              write=write, last_only=last_only,
+                                              return_hidden=return_hidden or (last_only and not final_block))
+            if not last_only or final_block:
+                outputs.append(output)
         state._tokens += len(tokens)
         return outputs[-1] if last_only else torch.cat(outputs, 1)
 
@@ -609,11 +675,10 @@ class ContinualModel(nn.Module):
             self._validate_state(state)
         tokens = self._document_tokens(document)
         if state is None:
-            state = self._new_state()
+            state = self._new_state(prefix_hidden_only=bool(tokens))
         try:
-            for start in range(0, len(tokens), self.config.prefill_chunk_size):
-                self._forward_tokens(tokens[start:start + self.config.prefill_chunk_size], state,
-                                     last_only=True)
+            if tokens:
+                self._forward_tokens(tokens, state, last_only=True)
             state._documents += 1
         except Exception:
             state._valid = False
@@ -660,9 +725,8 @@ class ContinualModel(nn.Module):
         branch = self.clone_state(state)
         write = config.memory_policy == "temporary"
         prompt = self._question_tokens(question)
-        for start in range(0, len(prompt), self.config.prefill_chunk_size):
-            self._forward_tokens(prompt[start:start + self.config.prefill_chunk_size], branch, write=write,
-                                 last_only=True)
+        if prompt:
+            self._forward_tokens(prompt, branch, write=write, last_only=True)
         generator = torch.Generator(device="cpu").manual_seed(config.seed)
         generated: list[int] = []
         eos = self.backbone.generation_config.eos_token_id
@@ -793,10 +857,21 @@ class ContinualModel(nn.Module):
                             for key, value in self.connections.state_dict().items()})
             adapter["persistent"] = self.persistent.detach().cpu().contiguous()
             save_file(adapter, temporary / "memory.safetensors")
+            from titans.methods.titans import NeuralMemory
+
+            memory_configs = {key: asdict(memory.config) for key, memory in self.memories.items()
+                              if type(memory) is NeuralMemory}
+            settings = asdict(self.config)
+            chunks = {options["chunk_size"] for options in memory_configs.values()}
+            if len(memory_configs) == len(self.memories) and len(chunks) == 1:
+                settings["chunk_size"] = chunks.pop()
             (temporary / "titans.json").write_text(json.dumps({
-                "format_version": 3,
+                "format_version": 4,
+                "mac_retrieval_policy": "shared_causal",
+                "builtin_memory_configs": memory_configs,
                 "connection_types": {key: type(module).__module__ + "." + type(module).__qualname__
-                                     for key, module in self.connections.items()}, "revision": self._revision, "config": asdict(self.config),
+                                     for key, module in self.connections.items()},
+                "revision": self._revision, "config": settings,
             }, indent=2) + "\n")
             temporary.rename(destination)
         except Exception:
@@ -829,20 +904,43 @@ class ContinualModel(nn.Module):
         """
         source = Path(path)
         metadata = json.loads((source / "titans.json").read_text())
-        if metadata["format_version"] not in (1, 2, 3):
+        if metadata["format_version"] not in (1, 2, 3, 4):
             raise ValueError("Unsupported Titans checkpoint format")
         settings = metadata["config"]
         settings["memory_layers"] = tuple(settings["memory_layers"])
-        runtime_fields = {field.name for field in fields(RuntimeConfig)}
-        config = config or RuntimeConfig(**{
-            key: value for key, value in settings.items() if key in runtime_fields
-        })
+        if metadata["format_version"] < 4:
+            settings["mac_segment_length"] = 1
+            settings.setdefault("chunk_size", 1)
+        elif metadata.get("mac_retrieval_policy") != "shared_causal":
+            raise ValueError("Unsupported MAC checkpoint retrieval policy")
+        runtime_fields = {field.name for field in fields(cls._config_type)}
+        if config is None:
+            config = cls._config_type(**{k: v for k, v in settings.items() if k in runtime_fields})
+        else:
+            config = replace(config, mac_segment_length=settings["mac_segment_length"])
         from titans.methods.titans import (
             TitansMACConnection,
             TitansMAGConnection,
             titans_mac_connection,
             titans_mag_connection,
         )
+
+        if memory_architecture is None and memory_factory is None:
+            from titans.methods.titans import NeuralMemory, TitansConfig
+
+            saved = metadata.get("builtin_memory_configs", {})
+            if metadata["format_version"] == 4 and set(saved) != {str(i) for i in config.memory_layers}:
+                raise ValueError("Custom checkpoint requires an explicit memory_architecture")
+            layer_settings = iter(saved[str(i)] if metadata["format_version"] == 4 else settings
+                                  for i in config.memory_layers)
+
+            def restore_memory(hidden_size: int) -> NeuralMemory:
+                """Restore the next configured memory layer at the decoder's hidden width."""
+                options = dict(next(layer_settings))
+                options["memory_layers"] = tuple(options["memory_layers"])
+                return NeuralMemory(hidden_size, TitansConfig(**options))
+
+            memory_architecture = restore_memory
 
         # Older format-3 checkpoints recorded the original flat package paths.
         legacy_connections = {

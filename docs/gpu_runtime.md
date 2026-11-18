@@ -123,7 +123,9 @@ partition is merged with the FA3 local partition using log-sum-exp normalization
 This preserves the explicit local-plus-prefix mask; dropping the prefix or using
 full-history attention would change the model.
 
-The configured path requires Hopper hardware and BF16 or FP16. Training uses
+In `auto` mode, the runtime checks the projected Q/K/V dtypes, Hopper support,
+the installed FA3 kernel, the causal cache layout and autograd mode. Unsupported
+calls use SDPA. Explicit `fa3` reports the unsupported condition. Training with `auto` uses
 autograd-capable SDPA with cuDNN excluded; SGLang's cached FA3 entry point is used
 for inference. A pretrained Qwen training run produced NaNs in
 `ScaledDotProductCudnnAttentionBackward0`, including with JIT and Liger disabled.

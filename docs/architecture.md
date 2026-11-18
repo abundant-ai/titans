@@ -15,7 +15,7 @@ model = ContinualModel.from_pretrained(
     "Qwen/Qwen2.5-1.5B-Instruct",
     config=RuntimeConfig(memory_layers=(0, 6, 12), attention_window=512),
     memory_architecture=TitansArchitecture(TitansConfig(
-        memory_dim=64, memory_hidden_dim=128, memory_depth=2, chunk_size=1,
+        memory_dim=64, memory_hidden_dim=128, memory_depth=2, chunk_size=16,
     )),
     connection_factory=titans_mac_connection,
 )
@@ -52,24 +52,30 @@ equations 21–25](https://arxiv.org/html/2501.00663v1#S4.SS1): retrieve old mem
 place the retrieval in the attention context, update memory from attention output,
 then read the updated memory to gate the output.
 
-This streaming implementation uses **one real token per MAC segment**, with one
-retrieved context token. Only persistent-prefix KV survives between segments.
-The memory state carries the history. This ensures causal execution and equal
-results when the caller splits a document differently. Virtual context tokens
-use segment-local rotary positions and do not count as real input/label tokens.
-The decoder architecture and FFN remain fixed. Joint pretraining updates their
-weights; Qwen adaptation freezes them by default.
+A new MAC model starts each **512-real-token segment** with a differentiable
+copy of the incoming memory. Each token queries that copy using its own input
+and the retrieval convolution's causal history. The MAC layer attends to
+`prefix, r1, x1, r2, x2, …` using segment-local rotary positions. Token 100
+can attend to the first 100 retrievals and real tokens. Token 513 starts with
+fresh segment KV and keeps the persistent prefix. Other layers use their usual
+sliding attention window.
 
-The default memory write chunk is one token. Choosing a larger memory write
-chunk delays commits; that is an algorithmic choice distinct from MAC segmentation.
-Reads for context run on independent state copies; only attention-driven writes
-advance the live state. Read-only answers never commit their temporary state.
+Each real-token attention output supplies one query, key, value and set of
+gates. The built-in memory commits after 16 writes. Token 15 reads the old
+weights. Token 16 reads the newly committed weights with the same query it
+computed before the write. Each token uses that read to gate its attention
+output. Incomplete writes carry across documents and prefill calls.
 
-This is a MAC retrofit with a specific causal segmentation policy. It does not
-reproduce the paper's larger-segment experiments, establish their accuracy, or
-promise that MAC outperforms every other connection. Larger MAC segments are not
-yet implemented in the fixed runtime. Context-expanding policies currently run
-one real token at a time, and declare a finite `max_context_tokens` bound.
+A question can arrive halfway through either interval. Its branch copies the
+segment cache, retrieval cursor and live memory, including pending writes.
+`temporary` lets the branch commit writes. `read_only` uses the committed
+weights. The next document continues from the source state.
+
+`mac_segment_length` counts real tokens, `chunk_size` counts writes, and
+`prefill_chunk_size` bounds execution blocks. Only the first two change the
+model's predictions. Host blocks of 256 and training detaches at 2,048 tokens
+preserve the segment offset. Custom connections retain their declared context
+bound and execution order.
 
 ## Fixed versus overridable
 
@@ -89,7 +95,10 @@ one real token at a time, and declare a finite `max_context_tokens` bound.
 `titans_mag_connection` selects the parallel normalized MAG-style gate.
 `residual_connection` selects the prior pretrained residual retrofit. Checkpoints
 from formats 1 and 2 restore residual connections automatically; format 3 saves
-connection types and weights. Custom connections require an explicit factory when
+connection types and weights. Formats 1–3 restore historical one-token MAC segments
+and the saved write chunk (one when absent). Format 4 records the segment length,
+shared causal retrieval policy and each built-in memory configuration. The corrected
+convolution read can change historical MAC predictions. Custom connections require an explicit factory when
 loading. A checkpoint never imports arbitrary code from its metadata.
 
 Compiled memory kernels, Liger, activation checkpointing, gradient accumulation
@@ -100,5 +109,4 @@ silently dispatch through an incompatible serving adapter. The historical
 throughput benchmarks explicitly select the residual connection.
 
 The original optimization audit describes commit `1cf5ad1`; its source hashes do
-not describe this architecture extension. GPU checks remain manual and were not
-run for this change.
+not describe this architecture extension. GPU checks run manually on Modal.

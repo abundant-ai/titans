@@ -53,6 +53,9 @@ class StreamState:
     _next_hidden: Tensor | None = None
     _remote_id: str | None = None
 
+    _retrieval: dict[int, MemoryState] = field(default_factory=dict)
+    _boundary_prediction: bool = False
+
     @property
     def memory(self) -> Mapping[int, MemoryState]:
         """Expose algorithm-owned state by layer without allowing layer reassignment."""
@@ -90,11 +93,13 @@ class StreamState:
             {index: memory.copy(detach=detach) for index, memory in self._memory.items()},
             {index: cache.copy(detach=detach) for index, cache in self._attention.items()},
             self._position, self._tokens, self._documents, logits, self._valid, hidden,
+            _retrieval={i: m.copy(detach=detach) for i, m in self._retrieval.items()},
+            _boundary_prediction=self._boundary_prediction,
         )
 
     def _detach(self) -> None:
         """Cut training history at a truncated-backpropagation boundary."""
-        for memory in self._memory.values():
+        for memory in (*self._memory.values(), *self._retrieval.values()):
             memory.detach()
         for cache in self._attention.values():
             cache.keys = cache.keys.detach()

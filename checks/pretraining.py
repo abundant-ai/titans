@@ -1,117 +1,123 @@
-"""Manually invoked H100 checks for the fixed scratch decoder and joint training."""
+"""Fixed-input H100 checks for streaming, mixed precision and fused loss."""
 
-import gc
-import tempfile
-from dataclasses import asdict, replace
-from pathlib import Path
+import statistics
+import time
+from dataclasses import replace
 
 import torch
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from transformers import LlamaForCausalLM, PreTrainedTokenizerFast
 
-from titans import Document, TitansConfig, TitansModel, TrainingConfig, TrainingEpisode
+from titans import TitansConfig, TitansModel
+from titans.optim.gpu_ops import liger_loss
+from titans.runtime.backbones import scratch_config
 
 
 def run_pretraining_checks() -> dict[str, object]:
-    """Compare full-size eager/optimized gradients, then run three joint AdamW steps.
+    """Compare fixed forwards and backwards on the locked FP32-stored scratch model.
 
     Returns:
-        Measured parameter counts, gradient parity, training results and peak memory.
-        Raises an assertion if a gradient, parameter update or checkpoint is wrong.
+        Numerical errors, peak allocated bytes, throughput and vocabulary-head calls.
+        All runs use the same weights and token IDs. No optimizer is constructed.
     """
-    assert torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 9
-    torch.set_num_threads(4)
+    assert torch.cuda.get_device_capability()[0] == 9
+    torch.manual_seed(17)
     torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-    config = TitansConfig(compile_kernels=False, use_liger=False, persistent_tokens=2,
-                          inference_backend="torch", attention_backend="sdpa")
-    print("Building fixed scratch decoder with the real Llama 2 tokenizer", flush=True)
-    eager = TitansModel.from_scratch(config, device="cuda", seed=17)
-    eager.backbone.requires_grad_(True)
-    tokens = eager.tokenizer.encode("Alice lives in Paris. Bob lives in Rome.", add_special_tokens=False)[:8]
-    eager.train()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(WordLevel({"x": 0})))
+    config = TitansConfig(compile_kernels=False, use_liger=False, inference_backend="torch",
+                          attention_backend="sdpa")
+    with torch.device("cuda"):
+        model = TitansModel(LlamaForCausalLM(scratch_config()), tokenizer, config)
+    ids = list(range(17, 50))
+    targets = torch.tensor(ids[1:], device="cuda")
+    model.backbone.requires_grad_(True)
+    watched = ("backbone.lm_head.weight", "backbone.model.layers.0.self_attn.q_proj.weight",
+               "memories.0.qkv.weight", "memories.0.initial_weights.0")
+    gradients = {}
+    losses = []
+    gradient_errors = {}
     with sdpa_kernel(SDPBackend.MATH):
-        state = eager._new_state()
-        output = eager._forward_tokens(tokens, state)
-        memory_loss = sum(t.square().sum() for t in state.memory[0].adaptable().values())
-        inner_gradient, = torch.autograd.grad(memory_loss, eager.backbone.model.embed_tokens.weight,
-                                             retain_graph=True)
-        assert torch.isfinite(inner_gradient).all() and inner_gradient.norm() > 0
-        loss = F.cross_entropy(output[:, :-1].reshape(-1, output.shape[-1]),
-                               torch.tensor(tokens[1:], device="cuda"))
-        loss.backward()
-    expected = {name: p.grad.detach().cpu() for name, p in eager.named_parameters() if p.grad is not None}
-    assert any(name.startswith("memories.") for name in expected)
-    expected_loss = loss.item()
-    parameter_count = sum(p.numel() for p in eager.backbone.parameters())
-    total_count = sum(p.numel() for p in eager.parameters())
-    del eager, state, output, loss, inner_gradient, memory_loss
-    gc.collect()
-    torch.cuda.empty_cache()
-    print("Checking compiled memory, Liger kernels and checkpointed decoder gradients", flush=True)
-    optimized = TitansModel.from_scratch(replace(config, compile_kernels=True, use_liger=True),
-                                         device="cuda", seed=17)
-    optimized.backbone.requires_grad_(True)
-    optimized._checkpoint_backbone = True
-    optimized.train()
-    with sdpa_kernel(SDPBackend.MATH):
-        state = optimized._new_state()
-        output = optimized._forward_tokens(tokens, state)
-        loss = F.cross_entropy(output[:, :-1].reshape(-1, output.shape[-1]),
-                               torch.tensor(tokens[1:], device="cuda"))
-        loss.backward()
-    torch.testing.assert_close(loss.detach().cpu(), torch.tensor(expected_loss), rtol=2e-4, atol=2e-5)
-    checked = 0
-    max_error = 0.0
-    for name, parameter in optimized.named_parameters():
-        assert (parameter.grad is not None) == (name in expected), name
-        if parameter.grad is None:
-            continue
-        actual = parameter.grad.detach().cpu()
-        assert torch.isfinite(actual).all(), name
-        max_error = max(max_error, (actual - expected[name]).abs().max().item())
-        torch.testing.assert_close(actual, expected[name], rtol=3e-3, atol=3e-5, msg=name)
-        checked += 1
-    del expected, state, output, loss, actual
-    optimized.zero_grad(set_to_none=True)
-    watched_names = (
-        "backbone.model.embed_tokens.weight", "backbone.model.layers.0.self_attn.q_proj.weight",
-        "backbone.model.layers.0.mlp.up_proj.weight", "backbone.model.norm.weight",
-        "backbone.lm_head.weight", "memories.0.gates.weight",
-    )
-    before = {name: p.detach().cpu().clone() for name, p in optimized.named_parameters()
-              if name in watched_names}
-    print("Running three joint steps with fused Liger loss and truncated backpropagation", flush=True)
-    with tempfile.TemporaryDirectory() as directory:
-        result = optimized.fit(
-            [TrainingEpisode("smoke", (Document("d", "Alice lives in Paris. Bob lives in Rome. " * 8),))],
-            TrainingConfig(Path(directory) / "checkpoint", max_tokens=12, sequence_length=4,
-                           tokens_per_step=4, objective="language_modeling"),
-        )
-        assert result.optimizer_steps == 3 and result.tokens_processed == 12
-        for name, parameter in optimized.named_parameters():
-            if name in before:
-                assert not torch.equal(parameter.detach().cpu(), before[name]), name
-        assert not any(p.requires_grad for p in optimized.backbone.parameters())
-        with torch.no_grad():
-            prediction = optimized._forward_tokens(tokens, optimized._new_state()).detach().cpu()
-        # Restore the same learned weights with eager execution for independent parity.
-        restored = TitansModel.load_pretrained(result.checkpoint_path, device="cuda")
-        restored.config = replace(restored.config, compile_kernels=False, use_liger=False)
-        for memory in restored.memories.values():
-            memory.config = replace(memory.config, compile_kernels=False, use_liger=False)
-        assert restored.backbone_kind == "scratch"
-        with torch.no_grad():
-            actual_prediction = restored._forward_tokens(tokens, restored._new_state()).cpu()
-        torch.testing.assert_close(prediction, actual_prediction, rtol=3e-3, atol=3e-4)
-        report = asdict(result)
-        report["checkpoint_path"] = "temporary checkpoint (restoration verified, then removed)"
-    return {
-        "backbone_parameters": parameter_count, "total_parameters": total_count,
-        "gradient_tensors_compared": checked, "maximum_gradient_absolute_error": max_error,
-        "eager_loss": expected_loss, "joint_fit": report,
-        "peak_gpu_bytes": torch.cuda.max_memory_allocated(),
-        "checks": ["fixed full-size decoder", "Llama 2 tokenizer", "inner write to theta gradient",
-                   "eager/compiled/Liger gradient parity", "three joint AdamW steps",
-                   "truncation", "theta and phi changed", "checkpoint restore", "refrozen backbone"],
-    }
+        for fused in (False, True):
+            model.config = replace(config, use_liger=fused, compile_kernels=fused,
+                                   attention_backend="auto" if fused else "sdpa")
+            for memory in model.memories.values():
+                memory.config = model.config
+            model.zero_grad(set_to_none=True)
+            with torch.autocast("cuda", torch.bfloat16):
+                state = model._new_state()
+                pred = model._forward_tokens(ids, state, return_hidden=fused)
+                h = pred[0, :-1]
+                loss = (liger_loss(model.backbone.lm_head.weight, h, targets) if fused else
+                        F.cross_entropy(h.float(), targets, reduction="sum")) / len(targets)
+            loss.backward()
+            assert state.memory[0].pending.shape[1] == 1
+            assert state.memory[0].weights[0].dtype == torch.float32
+            assert state._attention[0].keys.dtype == torch.bfloat16
+            assert state.memory[0].momentum[0].abs().max() > 0
+            losses.append(loss.detach().item())
+            for name in watched:
+                gradient = model.get_parameter(name).grad
+                assert gradient is not None and gradient.isfinite().all() and gradient.norm() > 0, name
+                if fused:
+                    reference = gradients[name]
+                    actual = gradient.cpu()
+                    relative = (actual - reference).norm() / reference.norm()
+                    gradient_errors[name] = relative.item()
+                    assert relative < 0.08, (name, relative.item())
+                else:
+                    gradients[name] = gradient.cpu().clone()
+            del state, pred, h, loss
+    torch.testing.assert_close(torch.tensor(losses[0]), torch.tensor(losses[1]), rtol=0.01, atol=0.01)
+    model.zero_grad(set_to_none=True)
+    model.eval()
+    for memory in model.memories.values():
+        memory.config = config
+    with torch.no_grad():
+        output_fp32 = []
+        for backend in ("auto", "sdpa"):
+            model.config = replace(config, attention_backend=backend)
+            output_fp32.append(model._forward_tokens(ids, model._new_state(), last_only=True))
+        torch.testing.assert_close(*output_fp32, rtol=0, atol=0)
+        del output_fp32
+    metrics = {}
+    reference: Tensor | None = None
+    for label, stride, backend in (("tokenwise_sdpa", 1, "sdpa"), ("block_sdpa", 256, "sdpa"),
+                                   ("block_fa3", 256, "fa3")):
+        model.config = replace(config, prefill_chunk_size=stride, attention_backend=backend)
+        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            state = model._new_state()
+            outputs = model._forward_tokens(ids, state).float()
+            if reference is None:
+                reference = outputs.clone()
+            torch.testing.assert_close(outputs, reference, rtol=0.06, atol=0.12)
+            errors = (outputs - reference).abs().max().item()
+            del state, outputs
+            times = []
+            for repeat in range(4):
+                head_calls = []
+                handle = model.backbone.lm_head.register_forward_hook(
+                    lambda module, args, output: head_calls.append(output.shape[1]))
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
+                start = time.perf_counter()
+                try:
+                    state = model._new_state(prefix_hidden_only=True)
+                    model._forward_tokens(ids, state, last_only=True)
+                    torch.cuda.synchronize()
+                finally:
+                    handle.remove()
+                if repeat:
+                    times.append(time.perf_counter() - start)
+                assert head_calls == [1]
+                peak = torch.cuda.max_memory_allocated()
+                del state
+            metrics[label] = {"tokens_per_second": len(ids) / statistics.median(times),
+                              "peak_allocated_bytes": peak, "head_calls": len(head_calls),
+                              "max_logit_error": errors}
+    return {"real_tokens": len(ids), "segment": 512, "write_chunk": 16,
+            "gradient_relative_l2": gradient_errors, "fp32_auto_sdpa_equal": True,
+            "eager_loss": losses[0], "liger_loss": losses[1], "prefill": metrics}

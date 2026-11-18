@@ -7,7 +7,8 @@
 Start from a fixed random Llama-style decoder or pretrained Qwen2.5-1.5B-Instruct. Supply the memory
 method, training data, objective and update policy. Titans is the reference method,
 implemented in [titans/methods/titans.py](titans/methods/titans.py). The default MAC connection uses
-one-token segments; MAG and the previous residual connection are selectable.
+512 real tokens per segment and commits a memory write every 16 tokens.
+MAG and the residual connection are also selectable.
 
 This is a research library. Its Titans integration supports joint pretraining and
 frozen-backbone adaptation; it is not a reproduction of the paper's complete architecture or published QA results.

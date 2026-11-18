@@ -28,10 +28,9 @@ gradient protocols separately.
 check counts and complete output. A failed or skipped GPU check makes the command
 fail after saving the report. These checks do not measure QA quality or throughput.
 
-## Joint pretraining check
+## H100 streaming and gradient check
 
-`uvx modal run --env testing checks/modal_pretraining.py` separately runs the
-explicitly authorized H100 training smoke test. It uses the full fixed scratch
-decoder, compares eager/optimized gradients, executes three optimizer steps, and
-checks a saved model. This job is manual and outside CI. The inference checks
-above continue to run no training. See [pretraining](../docs/pretraining.md).
+`uvx modal run --env testing checks/modal_pretraining.py` runs fixed inputs
+through the full scratch decoder. It compares eager and compiled/Liger
+gradients under BF16 autocast and measures FA3 and SDPA prefill. The job runs
+outside CI. Optimizer-step tests run on CPU. See [pretraining](../docs/pretraining.md).

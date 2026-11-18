@@ -1,4 +1,4 @@
-"""Explicitly launched H100 joint-training smoke checks; excluded from CI."""
+"""Explicitly launched H100 fixed-input streaming and gradient checks; excluded from CI."""
 
 import json
 from pathlib import Path
@@ -20,7 +20,7 @@ cache = modal.Volume.from_name("titans-verification-cache", create_if_missing=Tr
 @app.function(image=image, gpu="H100", cpu=4, memory=16384, timeout=1800, startup_timeout=300,
               max_containers=1, volumes={"/cache": cache})
 def verify() -> dict[str, object]:
-    """Run bounded full-size gradient and optimizer checks on one H100.
+    """Run bounded full-size inference and gradient comparisons on one H100.
 
     Returns:
         Device/software/source provenance and pass/failure details, including failures.
@@ -40,7 +40,7 @@ def verify() -> dict[str, object]:
         "device": subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name,uuid", "--format=csv,noheader"], text=True,
         ).strip(),
-        "torch": torch.__version__, "cuda": torch.version.cuda,
+        "torch": str(torch.__version__), "cuda": torch.version.cuda,
         "transformers": importlib.metadata.version("transformers"),
         "liger_kernel": importlib.metadata.version("liger-kernel"),
         "source_sha256": {
@@ -62,7 +62,7 @@ def verify() -> dict[str, object]:
 
 @app.local_entrypoint()
 def main(output: str = "validation/h100_pretraining.json") -> None:
-    """Launch the requested manual training check and persist its evidence.
+    """Launch the manual H100 comparison and persist its evidence.
 
     Args:
         output: Local JSON report destination, including on test failure.

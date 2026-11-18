@@ -1,5 +1,7 @@
 """Optional CUDA kernels, imported only on the explicit accelerator paths."""
 
+from functools import lru_cache
+
 import torch
 from torch import Tensor
 from torch.nn import functional as F
@@ -32,6 +34,54 @@ def merge_persistent_attention(
     prefix_fraction = (prefix_lse - local_lse).sigmoid()[..., None]
     local = local_output.transpose(1, 2).float()
     return (prefix_output * prefix_fraction + local * (1 - prefix_fraction)).to(query.dtype)
+
+
+@lru_cache(maxsize=None)
+def fa3_device_unavailable(device: torch.device) -> str | None:
+    """Check the Hopper kernel installation once for each CUDA device.
+
+    Args:
+        device: The CUDA device that will execute attention.
+
+    Returns:
+        The reason a worker cannot use FA3, or None when the kernel is available.
+    """
+    if torch.cuda.get_device_capability(device)[0] != 9:
+        return "the installed integration targets Hopper GPUs"
+    try:
+        from sgl_kernel.flash_attn import flash_attn_with_kvcache, is_fa3_supported
+    except (ImportError, OSError, RuntimeError) as error:
+        return f"sgl_kernel FA3 could not be loaded ({error})"
+    if not is_fa3_supported(device):
+        return "sgl_kernel does not support this CUDA runtime or device"
+    return None if callable(flash_attn_with_kvcache) else "the FA3 kernel is missing"
+
+
+def fa3_unavailable(query: Tensor, keys: Tensor, values: Tensor, prefix_count: int,
+                    prefix_only: bool) -> str | None:
+    """Check eligibility for the inference kernel on a causal, prefix-plus-window cache.
+
+    Args:
+        query: Rotary-encoded queries from the actual projection.
+        keys: Grouped keys including the retained prefix.
+        values: Values in matching cache order.
+        prefix_count: Number of global prefix keys.
+        prefix_only: Whether all queries belong to the prefix.
+
+    Returns:
+        A reason for falling back to SDPA, or None when FA3 supports the call.
+    """
+    if torch.is_grad_enabled():
+        return "the KV-cache kernel requires disabled autograd"
+    if query.device.type != "cuda" or keys.device != query.device or values.device != query.device:
+        return "Q, K and V must share a CUDA device"
+    if query.dtype not in (torch.bfloat16, torch.float16) or keys.dtype != query.dtype or values.dtype != query.dtype:
+        return "Q, K and V must share BF16 or FP16 dtype"
+    if query.shape[-1] % 8 or query.shape[-1] > 256 or query.shape[1] % keys.shape[1]:
+        return "unsupported head size or grouped-query configuration"
+    if not prefix_only and keys.shape[2] - prefix_count < query.shape[2]:
+        return "queries must be a causal suffix of the ordinary keys"
+    return fa3_device_unavailable(query.device)
 
 
 def flash_attention3(

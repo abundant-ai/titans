@@ -1,0 +1,74 @@
+{
+  "device": "NVIDIA H100 80GB HBM3, GPU-d9214ab5-d59d-c9f1-9d31-5fd9d5ef0be9",
+  "torch": "2.9.1+cu129",
+  "cuda": "12.9",
+  "transformers": "4.57.1",
+  "liger_kernel": "0.6.4",
+  "source_sha256": {
+    "titans/__init__.py": "32dd3fe595169546b951236ddda6addcfa4028f32ca1a828d1cfbf9cc1349391",
+    "titans/core/__init__.py": "391591b728cb77d64e1f7e2ff204e68292bbf803b13d0b56978d139d8b5ac7a0",
+    "titans/core/protocols.py": "416af5ff27f3c7441b24147faffd3663e6eb641497301284f9d49c4fb8d434df",
+    "titans/core/types.py": "69801abae7f0834c607c58f91a3a1d88fd4c8bb61874a4607ebd4688c079a044",
+    "titans/methods/__init__.py": "46b4cb3ecf334dabf23a141324c37811a05f0655e3b0ea99b2fc7c8c35cd7145",
+    "titans/methods/titans.py": "fab1ad584b4b322a8d5c033e5f0c2ce9531cbb2f645e7ea95ce1a27e3d5b9b2e",
+    "titans/optim/__init__.py": "97809859c569007d5f4c89f584935f7f383ad27adbcba3c962876547df61caa0",
+    "titans/optim/cuda_graphs.py": "f152520af3604d4d14c6a7eb356941255dd77387d5f1593db0d3363be4d5b4a9",
+    "titans/optim/gpu_ops.py": "d6a7d08acdc2856e8e06b4ef6046199745587634da3be0818b4c414c4705da1e",
+    "titans/optim/kernels.py": "5c04c95a8e1c10f30195359e2abe7b1e531191c56a140a6f697d8ff02d963feb",
+    "titans/runtime/__init__.py": "64f71545f1f74236176a709924410fecd79db1aeafb390907b656d5770e15b13",
+    "titans/runtime/backbones.py": "ded9b271367ce29a7948e18a816464b86652274644a46839f6715575ec73b047",
+    "titans/runtime/connections.py": "92fb13cf65e6c1827257cdb0c0def35da3ec13b6555083571dfca3bbf521e20b",
+    "titans/runtime/model.py": "779c548fe28f549ff1ea08531efbcaeb13fd6043decb5188ff70b846a66b9312",
+    "titans/runtime/state.py": "61d6fd0e751bf2a127b9f1fb6f250a759870debdcf413d364547eea91bdb1957",
+    "titans/serving/__init__.py": "b94eb923e33635db141ce321062be7032b9910da60e451295153875eed23f9e6",
+    "titans/serving/backend.py": "d4e87531b15e0613006348ee9495d7c4860b7609eefd0bb35106c6cb1700c8aa",
+    "titans/serving/models/__init__.py": "73ef36be644bc85722c73a48daf1cb29dd025c077b3f7ee320ae5178ec65d76c",
+    "titans/serving/models/titans_llama.py": "b4feb4b93a8104ac1f5f98370036176b8cbff6be31f9ff1ef49b4ce4a95255e4",
+    "titans/serving/registry.py": "a36df5a8c898bbc9f1455d08664745525ad9f2b312e580117d6b058f3d63be83",
+    "titans/training/__init__.py": "3a35133a4081cdf9292e72e40e35dcc9bb139b26d1ac5555eb7d65644392f72e",
+    "titans/training/learning.py": "205645650197cb51b68603a5fa4c396d28e1a5eea57ef08c0a8de7765c026d3a",
+    "titans/training/trainer.py": "c417217b312f5fc1fb28423e4af10f244af9f4838b90ee49caa8afe488f04219",
+    "checks/__init__.py": "a7a8f3d710fda90978d1d8f3df83c31cd089d592419b84b346b2952a8a818356",
+    "checks/conftest.py": "1ce812503f3abaf1c084c5e39a72606007a97d2d434ddf05fcb9ce7e5f40e60e",
+    "checks/gpu_inference.py": "ac2870723a26b8c25deb10928f90b1a727595c53ac8b42619d7098c86664b3e1",
+    "checks/modal_inference.py": "3cb0f2bd8edb4880c619de42932c6e7b69de4509e4c0dcdd585c58ef54fcf52d",
+    "checks/modal_pretraining.py": "853e412ff5ed1bbb53dda94bbc91fbaef914f712f18f1e316a03ecd77e504c02",
+    "checks/pretraining.py": "31bf22d6e0b262f81ecfe3be499747d9e7c145adbcd7516fac287aab4452166c"
+  },
+  "results": {
+    "real_tokens": 33,
+    "segment": 512,
+    "write_chunk": 16,
+    "gradient_relative_l2": {
+      "backbone.lm_head.weight": 0.009209996089339256,
+      "backbone.model.layers.0.self_attn.q_proj.weight": 0.01617974229156971,
+      "memories.0.qkv.weight": 0.014338461682200432,
+      "memories.0.initial_weights.0": 0.018369754776358604
+    },
+    "fp32_auto_sdpa_equal": true,
+    "eager_loss": 10.626777648925781,
+    "liger_loss": 10.62968635559082,
+    "prefill": {
+      "tokenwise_sdpa": {
+        "tokens_per_second": 31.265345451971832,
+        "peak_allocated_bytes": 2363266048,
+        "head_calls": 1,
+        "max_logit_error": 0.0
+      },
+      "block_sdpa": {
+        "tokens_per_second": 518.073105892521,
+        "peak_allocated_bytes": 2362482176,
+        "head_calls": 1,
+        "max_logit_error": 0.0234375
+      },
+      "block_fa3": {
+        "tokens_per_second": 485.37734558602665,
+        "peak_allocated_bytes": 2370824704,
+        "head_calls": 1,
+        "max_logit_error": 0.03125
+      }
+    }
+  },
+  "passed": true,
+  "elapsed_seconds": 88.788107482
+}

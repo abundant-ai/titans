@@ -1,7 +1,7 @@
 """Public data contracts for document streams and post-training."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -56,11 +56,12 @@ class RuntimeConfig:
     attention_backend: Literal["auto", "sdpa", "fa3"] = "sdpa"
     use_liger: bool = False
     cuda_graphs: bool = True
+    mac_segment_length: int = field(default=512, kw_only=True)
 
     def __post_init__(self) -> None:
         """Reject invalid runtime settings before allocating the backbone adapter."""
-        if min(self.attention_window, self.prefill_chunk_size) < 1:
-            raise ValueError("Attention window and prefill size must be positive")
+        if min(self.mac_segment_length, self.attention_window, self.prefill_chunk_size) < 1:
+            raise ValueError("MAC segment length, attention window and prefill size must be positive")
         if self.persistent_tokens < 0:
             raise ValueError("persistent_tokens must be nonnegative")
         if not self.memory_layers or min(self.memory_layers) < 0:

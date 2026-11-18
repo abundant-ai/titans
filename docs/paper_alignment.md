@@ -1,6 +1,7 @@
 # Current connection default
 
-Fresh models use causal MAC with one-token segments. MAG and the historical
+Fresh models use causal MAC with 512-token segments, one shared causal retrieval per
+arriving token and 16-token memory writes. MAG and the historical
 residual retrofit remain available. See [architecture contracts](architecture.md)
 for the precise operation order, segmentation limits and compatibility behavior.
 The historical retrofit discussion below describes the residual connection.

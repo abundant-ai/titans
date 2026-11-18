@@ -39,6 +39,12 @@ class _TrainingRun:
                                    else model.backbone_kind != "scratch")
         self.parameters = list(model.outer_parameters(train_backbone=self.train_backbone))
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate)
+        self.use_liger = (loss is None and model.config.use_liger and model.backbone.device.type == "cuda")
+        self.mixed_precision = False
+        device = model.backbone.device
+        if device.type == "cuda" and model.backbone.dtype in (torch.bfloat16, torch.float32):
+            with torch.cuda.device(device):
+                self.mixed_precision = torch.cuda.is_bf16_supported(including_emulation=False)
         self.tokens = 0
         self.steps = 0
         self.window_tokens = 0
@@ -47,6 +53,11 @@ class _TrainingRun:
         self.total_targets = 0
         self.total_loss = 0.0
         self.losses: list[Tensor] = []
+
+    def _autocast(self) -> torch.autocast:
+        """Use BF16 on supported CUDA devices for the standard training forward pass."""
+        return torch.autocast(self.model.backbone.device.type, dtype=torch.bfloat16,
+                              enabled=self.mixed_precision)
 
     def _step(self) -> None:
         """Normalize accumulated summed losses by their actual target-token count."""
@@ -74,6 +85,13 @@ class _TrainingRun:
             torch.stack(self.losses).sum().backward()
             self.losses.clear()
         for state in states:
+            if self.use_liger and state._next_hidden is not None and state._next_logits is None:
+                with torch.no_grad(), self._autocast():
+                    state._next_logits = self.model.backbone.lm_head(state._next_hidden).detach()
+            elif state._next_logits is not None and not state._boundary_prediction:
+                # A contiguous last-row view can still own the whole vocabulary block.
+                state._next_logits = state._next_logits.detach().clone()
+            state._boundary_prediction = state._next_logits is not None
             state._detach()
         self.window_tokens = 0
         if final or self.step_tokens >= self.config.tokens_per_step:
@@ -101,8 +119,7 @@ class _TrainingRun:
             True if the entire input was consumed, False if the budget stopped it.
         """
         offset = 0
-        use_liger = (self.objective is None and self.model.config.use_liger
-                     and self.model.backbone.device.type == "cuda")
+        use_liger = self.use_liger
         while offset < len(tokens) and self.tokens < self.config.max_tokens:
             count = min(
                 len(tokens) - offset, self.model.config.prefill_chunk_size,
@@ -111,8 +128,13 @@ class _TrainingRun:
             )
             block = tokens[offset:offset + count]
             previous_logits = state._next_hidden if use_liger else state._next_logits
-            logits = self.model._forward_tokens(block, state, last_only=not supervise,
-                                                return_hidden=use_liger)
+            boundary = state._next_logits if use_liger and state._boundary_prediction else None
+            intermediate_prompt = (not supervise and offset + count < len(tokens)
+                                   and self.tokens + count < self.config.max_tokens
+                                   and self.window_tokens + count < self.config.sequence_length)
+            with self._autocast():
+                logits = self.model._forward_tokens(block, state, last_only=not supervise,
+                                                    return_hidden=use_liger or intermediate_prompt)
             if supervise:
                 if previous_logits is None:
                     predictions, labels = logits[:, :-1], block[1:]
@@ -133,8 +155,18 @@ class _TrainingRun:
                     elif use_liger:
                         from titans.optim.gpu_ops import liger_loss
 
-                        loss = liger_loss(self.model.backbone.lm_head.weight,
-                                          predictions.reshape(-1, predictions.shape[-1]), targets)
+                        live = predictions if boundary is None else predictions[:, 1:]
+                        live_targets = targets if boundary is None else targets[1:]
+                        with self._autocast():
+                            if live_targets.numel():
+                                loss = liger_loss(self.model.backbone.lm_head.weight,
+                                                  live.flatten(0, 1), live_targets).float()
+                            else:
+                                # Match eager's empty live slice, including zero head gradients.
+                                loss = self.model.backbone.lm_head(live).float().sum()
+                        if boundary is not None:
+                            loss = loss + F.cross_entropy(boundary.flatten(0, 1).float(),
+                                                          targets[:1], reduction="sum")
                     else:
                         loss = F.cross_entropy(
                             predictions.reshape(-1, predictions.shape[-1]).float(),
@@ -168,7 +200,8 @@ class _TrainingRun:
                 raise ValueError("after_documents must be between zero and the document count")
             if not item.target_answer.strip():
                 raise ValueError("Training answers must be nonempty; use [unknown] for abstention")
-        state = self.model._new_state()
+        with self._autocast():
+            state = self.model._new_state(prefix_hidden_only=self.use_liger)
         use_qa = self.config.objective in ("document_qa", "mixed")
         use_lm = self.config.objective in ("language_modeling", "mixed")
         for count in range(len(episode.documents) + 1):

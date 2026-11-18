@@ -5,7 +5,6 @@ There is no autograd invocation or per-token parameter-gradient allocation in
 the production update. Ordinary PyTorch operations retain outer gradients.
 """
 
-import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -49,7 +48,7 @@ class TitansConfig(RuntimeConfig):
     memory_dim: int = 128
     memory_hidden_dim: int = 256
     memory_depth: int = 2
-    chunk_size: int = 1
+    chunk_size: int = 16
     conv_kernel: int = 3
     max_inner_learning_rate: float = 0.01
     gate_bias: float = -4.0
@@ -303,6 +302,38 @@ class NeuralMemory(MemoryModule):
             within an unfinished chunk all use its initial weights; no current
             or future token's write is visible until the next chunk.
         """
+        return self._read_and_update(hidden, state, write=write, post_write=False)
+
+    def _read_and_update(self, hidden: Tensor, state: StateProtocol, *, write: bool,
+                         post_write: bool) -> Tensor:
+        """Project once and select the committed weights visible to each query.
+
+        Args:
+            hidden: Causal input activations in the host dtype.
+            state: Owned memory and projection history.
+            write: Whether to enqueue and commit writes.
+            post_write: Whether a closing token reads its own chunk's commit.
+
+        Returns:
+            Memory outputs in the original host dtype.
+        """
+        with torch.autocast(hidden.device.type, enabled=False):
+            return self._project_and_scan(hidden.to(self.qkv.weight.dtype), state,
+                                          write=write, post_write=post_write).to(hidden.dtype)
+
+    def _project_and_scan(self, hidden: Tensor, state: StateProtocol, *, write: bool,
+                          post_write: bool) -> Tensor:
+        """Scan projected tokens in chunks, retaining FP32 fast-weight arithmetic.
+
+        Args:
+            hidden: Activations in projection storage dtype.
+            state: Mutable stream-local memory.
+            write: Whether to update the pending buffer.
+            post_write: Whether a closing query reads newly committed weights.
+
+        Returns:
+            Gated reads for all input positions.
+        """
         if not isinstance(state, MemoryState):
             raise TypeError("Titans requires its own MemoryState")
         from titans.optim.kernels import (
@@ -329,8 +360,11 @@ class NeuralMemory(MemoryModule):
             end = start + count
             # Inductor may return transposed layouts. Canonicalize even singleton
             # strides so prefill/decode do not exhaust Dynamo's specialization cache.
-            read_queries = query[:, start:end].clone(memory_format=torch.contiguous_format)
-            outputs.append(retrieve(state.weights, read_queries))
+            closing = write and count + state.pending.shape[1] == self.config.chunk_size
+            before = end - int(post_write and closing)
+            if before > start:
+                queries = query[:, start:before].clone(memory_format=torch.contiguous_format)
+                outputs.append(retrieve(state.weights, queries))
             if write:
                 updates = torch.cat((key[:, start:end], value[:, start:end], gates[:, start:end]), -1)
                 state.pending = torch.cat((state.pending, updates), 1)
@@ -340,7 +374,10 @@ class NeuralMemory(MemoryModule):
                     state.weights, state.momentum = update(
                         state.weights, state.momentum, k, v, g[..., 0], g[..., 1], g[..., 2]
                     )
-                    state.pending = state.pending[:, :0]
+                    state.pending = state.pending[:, :0].clone()
+                    if post_write:
+                        last = query[:, end - 1:end].clone(memory_format=torch.contiguous_format)
+                        outputs.append(retrieve(state.weights, last))
             start = end
         return combine(torch.cat(outputs, 1), hidden, self.read_norm.weight, self.read_norm.bias,
                        self.output.weight, self.mix_gate.weight, self.mix_gate.bias,
@@ -459,13 +496,7 @@ def titans_mag_connection(layer_index: int, hidden_size: int) -> BackboneConnect
 
 
 class TitansMACConnection(ResidualConnection):
-    """Causal MAC with one real token per segment and one retrieved context token.
-
-    Implements the ordering in equations 21-25: read old memory, prepend its
-    representation to attention, write attention output, then read updated memory.
-    The one-token segment makes arbitrary stream splits equivalent without looking
-    ahead. The segmentation differs from the paper's full training recipe.
-    """
+    """Memory as context, with one causal retrieval per arriving real token."""
 
     max_context_tokens = 1
 
@@ -482,8 +513,23 @@ class TitansMACConnection(ResidualConnection):
         Returns:
             Retrieved context followed by the real token as the attention input.
         """
-        retrieved = memory(context.normalized, state.copy(), write=False)
-        return ConnectionPlan(torch.cat((retrieved, context.normalized), dim=1), retrieved)
+        return self._prepare_segment(context, memory, state.copy())
+
+    def _prepare_segment(self, context: ConnectionContext, memory: MemoryModule,
+                         cursor: StateProtocol) -> ConnectionPlan:
+        """Interleave old-memory retrievals and real tokens in arrival order.
+
+        Args:
+            context: Decoder activations for this part of the segment.
+            memory: Built-in or protocol-supplied memory module.
+            cursor: Segment-start snapshot with its own advancing read history.
+
+        Returns:
+            Interleaved attention input and one retrieval per real token.
+        """
+        retrieved = memory(context.normalized, cursor, write=False)
+        pairs = torch.stack((retrieved, context.normalized), dim=2).flatten(1, 2)
+        return ConnectionPlan(pairs, retrieved)
 
     def finish(self, context: ConnectionContext, attention: Tensor, plan: ConnectionPlan,
                memory: MemoryModule, state: StateProtocol, *, write: bool) -> Tensor:
@@ -500,9 +546,15 @@ class TitansMACConnection(ResidualConnection):
         Returns:
             Residual plus attention multiplied by a SiLU memory gate.
         """
-        if write:
-            memory(attention, state, write=True)
-        retrieved = memory(attention, state.copy(), write=False)
+        if type(memory) is NeuralMemory:
+            retrieved = memory._read_and_update(attention, state, write=write, post_write=True)
+        else:
+            reads = []
+            for token in attention.split(1, dim=1):
+                if write:
+                    memory(token, state, write=True)
+                reads.append(memory(token, state.copy(), write=False))
+            retrieved = torch.cat(reads, dim=1)
         return self.combine(context, attention, ConnectionPlan(plan.attention_input, retrieved))
 
     def combine(self, context: ConnectionContext, attention: Tensor,
@@ -528,7 +580,7 @@ def titans_mac_connection(layer_index: int, hidden_size: int) -> BackboneConnect
         hidden_size: Residual width, supplied for custom connection factories.
 
     Returns:
-        Independent causal MAC connection with a one-token segment.
+        Independent causal MAC connection with one retrieval per arriving token.
     """
     return TitansMACConnection()
 
@@ -567,6 +619,8 @@ class TitansModel(ContinualModel):
     """Convenience constructor for the Titans method on the fixed runtime."""
 
     supports_sglang = True
+
+    _config_type = TitansConfig
 
     def __init__(
         self, backbone: "LlamaForCausalLM | Qwen2ForCausalLM",
@@ -671,9 +725,6 @@ class TitansModel(ContinualModel):
         Returns:
             Trained Titans parameters with fresh stream ownership.
         """
-        settings = json.loads((Path(path) / "titans.json").read_text())["config"]
-        settings["memory_layers"] = tuple(settings["memory_layers"])
-        config = TitansConfig(**settings)
-        return super().load_pretrained(path, memory_architecture=memory_architecture or TitansArchitecture(config), config=config,
+        return super().load_pretrained(path, memory_architecture=memory_architecture,
                                        connection_factory=connection_factory,
                                        device=device, dtype=dtype)

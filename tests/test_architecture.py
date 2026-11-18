@@ -164,7 +164,7 @@ def test_mac_retains_only_prefix_and_differentiates_writes(
         prefix: Number of persistent context tokens.
     """
     model = ContinualModel(tiny_model.backbone.double(), tiny_model.tokenizer,
-                          RuntimeConfig(persistent_tokens=prefix, compile_kernels=False),
+                          RuntimeConfig(persistent_tokens=prefix, mac_segment_length=4, compile_kernels=False),
                           memory_architecture=LinearMemory).double()
     state = model._new_state()
     model._forward_tokens([10, 11, 12, 13], state)
