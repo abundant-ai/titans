@@ -19,6 +19,26 @@ if TYPE_CHECKING:
     from titans.runtime.model import ContinualModel
 
 
+def refresh_prefix(model: "ContinualModel", state: StreamState) -> None:
+    """Recompute persistent-prefix KV on a fresh graph without ingesting real tokens.
+
+    Args:
+        model: Runtime using the current shared and backbone parameters.
+        state: Continuing detached stream whose document caches and memory survive.
+
+    Prefix positions are input-independent and can be rebuilt using an empty
+    stream. Only prefix KV is replaced, preserving real-token cache history.
+    """
+    count = model.config.persistent_tokens
+    if not count:
+        return
+    prefix = model._new_state(prefix_hidden_only=True)
+    for layer, cache in state._attention.items():
+        fresh = prefix._attention[layer]
+        cache.keys = torch.cat((fresh.keys, cache.keys[:, :, count:]), dim=2)
+        cache.values = torch.cat((fresh.values, cache.values[:, :, count:]), dim=2)
+
+
 class _TrainingRun:
     """Private accounting for bounded autograd windows and token-weighted updates."""
 
@@ -53,6 +73,7 @@ class _TrainingRun:
         self.total_targets = 0
         self.total_loss = 0.0
         self.losses: list[Tensor] = []
+        self.state: StreamState | None = None
 
     def _autocast(self) -> torch.autocast:
         """Use BF16 on supported CUDA devices for the standard training forward pass."""
@@ -85,17 +106,53 @@ class _TrainingRun:
             torch.stack(self.losses).sum().backward()
             self.losses.clear()
         for state in states:
-            if self.use_liger and state._next_hidden is not None and state._next_logits is None:
-                with torch.no_grad(), self._autocast():
-                    state._next_logits = self.model.backbone.lm_head(state._next_hidden).detach()
-            elif state._next_logits is not None and not state._boundary_prediction:
-                # A contiguous last-row view can still own the whole vocabulary block.
-                state._next_logits = state._next_logits.detach().clone()
-            state._boundary_prediction = state._next_logits is not None
             state._detach()
         self.window_tokens = 0
         if final or self.step_tokens >= self.config.tokens_per_step:
             self._step()
+        if not final:
+            with self._autocast():
+                for state in states:
+                    refresh_prefix(self.model, state)
+
+    def score(self, predictions: Tensor, labels: list[int], state: StreamState,
+              phase: Literal["document", "answer"]) -> None:
+        """Accumulate a summed loss for known causal next-token labels.
+
+        Args:
+            predictions: Logits or normalized hidden states on the live graph.
+            labels: Target IDs; a final lookahead label has not been forwarded.
+            state: State after the forwarded input block, before lookahead ingestion.
+            phase: Source of supervision for custom objectives.
+        """
+        if not labels:
+            return
+        targets = torch.tensor(labels, device=predictions.device)
+        if self.objective is not None:
+            result = self.objective(LossContext(
+                predictions.reshape(-1, predictions.shape[-1]), targets, state,
+                self.model.shared_parameters(), phase,
+                tuple(self.model.backbone.parameters()) if self.train_backbone else (),
+            ))
+            validate_loss(result)
+            loss, weight = result.value, result.weight
+        elif self.use_liger:
+            from titans.optim.gpu_ops import liger_loss
+
+            with self._autocast():
+                loss = liger_loss(self.model.backbone.lm_head.weight,
+                                  predictions.flatten(0, 1), targets).float()
+            weight = float(len(labels))
+        else:
+            loss = F.cross_entropy(predictions.reshape(-1, predictions.shape[-1]).float(),
+                                   targets, reduction="sum")
+            weight = float(len(labels))
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError("Nonfinite training loss; decrease the learning rate")
+        self.losses.append(loss)
+        self.step_targets += weight
+        self.total_targets += weight
+        self.total_loss += float(loss.detach().item())
 
     def consume(
         self,
@@ -105,6 +162,8 @@ class _TrainingRun:
         supervise: bool,
         live_states: tuple[StreamState, ...],
         phase: Literal["document", "answer"] = "document",
+        next_target: int | None = None,
+        next_phase: Literal["document", "answer"] = "document",
     ) -> bool:
         """Process tokens up to the exact remaining budget, with optional causal loss.
 
@@ -114,6 +173,9 @@ class _TrainingRun:
             supervise: Whether each token is a next-token prediction target.
             live_states: All active states to detach at an unroll boundary.
             phase: Whether supervision came from a document or answer.
+            next_target: Optional next supervised token after the entire input.
+                It is scored on this branch before truncation and never forwarded early.
+            next_phase: Supervision phase of that final lookahead label.
 
         Returns:
             True if the entire input was consumed, False if the budget stopped it.
@@ -127,57 +189,34 @@ class _TrainingRun:
                 self.config.max_tokens - self.tokens,
             )
             block = tokens[offset:offset + count]
-            previous_logits = state._next_hidden if use_liger else state._next_logits
-            boundary = state._next_logits if use_liger and state._boundary_prediction else None
-            intermediate_prompt = (not supervise and offset + count < len(tokens)
-                                   and self.tokens + count < self.config.max_tokens
-                                   and self.window_tokens + count < self.config.sequence_length)
+            previous = state._next_hidden if use_liger else state._next_logits
+            already_scored = state._next_target_scored
+            intermediate_prompt = not supervise and offset + count < len(tokens)
             with self._autocast():
                 logits = self.model._forward_tokens(block, state, last_only=not supervise,
                                                     return_hidden=use_liger or intermediate_prompt)
+            predictions = logits[:, :0]
+            labels: list[int] = []
             if supervise:
-                if previous_logits is None:
-                    predictions, labels = logits[:, :-1], block[1:]
-                else:
-                    predictions = torch.cat((previous_logits, logits[:, :-1]), 1)
+                predictions, labels = logits[:, :-1], block[1:]
+                if previous is not None and not already_scored:
+                    predictions = torch.cat((previous, predictions), 1)
                     labels = block
-                if labels:
-                    targets = torch.tensor(labels, device=logits.device)
-                    weight = float(len(labels))
-                    if self.objective is not None:
-                        result = self.objective(LossContext(
-                            predictions.reshape(-1, predictions.shape[-1]), targets, state,
-                            self.model.shared_parameters(), phase,
-                            tuple(self.model.backbone.parameters()) if self.train_backbone else (),
-                        ))
-                        validate_loss(result)
-                        loss, weight = result.value, result.weight
-                    elif use_liger:
-                        from titans.optim.gpu_ops import liger_loss
-
-                        live = predictions if boundary is None else predictions[:, 1:]
-                        live_targets = targets if boundary is None else targets[1:]
-                        with self._autocast():
-                            if live_targets.numel():
-                                loss = liger_loss(self.model.backbone.lm_head.weight,
-                                                  live.flatten(0, 1), live_targets).float()
-                            else:
-                                # Match eager's empty live slice, including zero head gradients.
-                                loss = self.model.backbone.lm_head(live).float().sum()
-                        if boundary is not None:
-                            loss = loss + F.cross_entropy(boundary.flatten(0, 1).float(),
-                                                          targets[:1], reduction="sum")
-                    else:
-                        loss = F.cross_entropy(
-                            predictions.reshape(-1, predictions.shape[-1]).float(),
-                            targets, reduction="sum",
-                        )
-                    if not bool(torch.isfinite(loss).item()):
-                        raise FloatingPointError("Nonfinite training loss; decrease the learning rate")
-                    self.losses.append(loss)
-                    self.step_targets += weight
-                    self.total_targets += weight
-                    self.total_loss += float(loss.detach().item())
+            following = None
+            following_phase = phase
+            if self.tokens + count < self.config.max_tokens:
+                if offset + count < len(tokens):
+                    if supervise:
+                        following = tokens[offset + count]
+                else:
+                    following, following_phase = next_target, next_phase
+            if following is not None and following_phase == phase:
+                predictions = torch.cat((predictions, logits[:, -1:]), 1)
+                labels = labels + [following]
+            self.score(predictions, labels, state, phase)
+            if following is not None and following_phase != phase:
+                self.score(logits[:, -1:], [following], state, following_phase)
+            state._next_target_scored = following is not None
             offset += count
             self.tokens += count
             self.window_tokens += count
@@ -187,7 +226,7 @@ class _TrainingRun:
         return offset == len(tokens)
 
     def episode(self, episode: TrainingEpisode) -> None:
-        """Train one independent stream with questions at specified document counts.
+        """Train an episode with reset or carried state and local document counts.
 
         Args:
             episode: Ordered documents and checkpointed supervision.
@@ -201,7 +240,15 @@ class _TrainingRun:
             if not item.target_answer.strip():
                 raise ValueError("Training answers must be nonempty; use [unknown] for abstention")
         with self._autocast():
-            state = self.model._new_state(prefix_hidden_only=self.use_liger)
+            if self.config.episode_memory == "reset" or self.state is None:
+                self.state = self.model._new_state(prefix_hidden_only=self.use_liger)
+            else:
+                # Episodes delimit supervised sequences, even when memory carries.
+                self.state._next_logits = None
+                self.state._next_hidden = None
+                self.state._next_target_scored = False
+                refresh_prefix(self.model, self.state)
+        state = self.state
         use_qa = self.config.objective in ("document_qa", "mixed")
         use_lm = self.config.objective in ("language_modeling", "mixed")
         for count in range(len(episode.documents) + 1):
@@ -209,27 +256,44 @@ class _TrainingRun:
                 for item in episode.questions:
                     if item.after_documents != count or self.tokens >= self.config.max_tokens:
                         continue
+                    # Every question due here branches from documents[:count].
+                    # The next question or document resumes from the original state.
                     branch = state._copy()
                     active = (state, branch)
-                    self.consume(self.model._question_tokens(item.question), branch,
-                                 supervise=False, live_states=active)
                     targets = self.model.tokenizer.encode(item.target_answer, add_special_tokens=False)
                     if self.model.tokenizer.eos_token_id is not None:
                         targets.append(self.model.tokenizer.eos_token_id)
+                    self.consume(self.model._question_tokens(item.question), branch,
+                                 supervise=False, live_states=active, next_target=targets[0],
+                                 next_phase="answer")
                     self.consume(targets, branch, supervise=True, live_states=active, phase="answer")
                     # The branch's graph may still contribute to pending losses;
                     # the loss tensors own it until the next flush.
             if count == len(episode.documents) or self.tokens >= self.config.max_tokens:
                 break
+            document_tokens = self.model._document_tokens(episode.documents[count])
+            next_document_target = None
+            if use_lm and count + 1 < len(episode.documents):
+                question_budget = 0
+                if use_qa:
+                    for item in episode.questions:
+                        if item.after_documents == count + 1:
+                            prompt, answer = feedback_tokens(
+                                self.model, item.question, item.target_answer)
+                            question_budget += len(prompt) + len(answer)
+                if self.tokens + len(document_tokens) + question_budget < self.config.max_tokens:
+                    next_ids = self.model._document_tokens(episode.documents[count + 1])
+                    next_document_target = next_ids[0] if next_ids else None
             complete = self.consume(
-                self.model._document_tokens(episode.documents[count]), state,
-                supervise=use_lm, live_states=(state,),
+                document_tokens, state, supervise=use_lm, live_states=(state,),
+                next_target=next_document_target,
             )
             if complete:
                 state._documents += 1
             else:
                 break
         self.flush((state,))
+        state._detach()
 
 
 def fit_model(
@@ -240,7 +304,7 @@ def fit_model(
 
     Args:
         model: Host model and memory components.
-        episodes: Independent streams; no replay or implicit epoch repetition.
+        episodes: Ordered episodes; episode_memory selects isolation or continuity.
         config: Validated training settings and new output directory.
         loss: Optional custom scalar objective and normalization.
         update: Optional checkpoint updater targeting phi, W, or both.
@@ -300,6 +364,7 @@ def fit_model(
         run.total_loss / run.total_targets if run.total_targets else None,
         time.perf_counter() - started,
         "token_budget" if run.tokens >= config.max_tokens else "data_exhausted",
+        run.state if config.episode_memory == "carry" else None,
     )
 
 
@@ -312,7 +377,8 @@ def fit_checkpoints(
     Each complete feedback item is one optimizer boundary. Its prompt and target
     must fit in one unroll. Oversized feedback is rejected; an insufficient token
     budget stops before feedback rather than learning from a partial answer.
-    Document state persists across unrolls and questions, and resets per episode.
+    Document state persists across unrolls and questions. The episode_memory
+    policy selects reset or carry at episode boundaries.
 
     Args:
         model: Prepared runtime with the selected outer-training targets.
@@ -340,7 +406,10 @@ def fit_checkpoints(
         if tokens >= config.max_tokens:
             exhausted_budget = True
             break
-        state = model._new_state()
+        if config.episode_memory == "reset" or state is None:
+            state = model._new_state()
+        else:
+            refresh_prefix(model, state)
         window_tokens = 0
         for count in range(len(episode.documents) + 1):
             for item in episode.questions:
@@ -353,6 +422,7 @@ def fit_checkpoints(
                     break
                 if window_tokens + size > config.sequence_length:
                     state._detach()
+                    refresh_prefix(model, state)
                 result = model.learn(item.question, item.target_answer, state,
                                      loss=loss, update=update, retain_history=True,
                                      train_backbone=not (config.freeze_backbone if config.freeze_backbone is not None
@@ -361,6 +431,7 @@ def fit_checkpoints(
                 total_loss += result.loss
                 steps += 1
                 window_tokens = 0
+                refresh_prefix(model, state)
             if exhausted_budget or count == len(episode.documents):
                 break
             document = episode.documents[count]
@@ -369,6 +440,7 @@ def fit_checkpoints(
             while offset < len(ids) and tokens < config.max_tokens:
                 if window_tokens == config.sequence_length:
                     state._detach()
+                    refresh_prefix(model, state)
                     window_tokens = 0
                 size = min(len(ids) - offset, model.config.prefill_chunk_size,
                            config.sequence_length - window_tokens, config.max_tokens - tokens)

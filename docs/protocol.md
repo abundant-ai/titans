@@ -12,7 +12,8 @@ Different methods may use different W representations and auxiliary buffers.
 fixed boundary format, processes every token in arrival order, and carries the
 same stream through bounded blocks. It neither shuffles documents nor resets W
 at a document boundary. Only an omitted state, `start_stream`, or a new training
-episode creates a new stream. `ingest` is marked final in the type contract.
+episode creates a new stream when `TrainingConfig.episode_memory="reset"` (the default).
+With `"carry"`, episodes continue the same document state within a fit call. `ingest` is marked final in the type contract.
 
 Each selected layer calls its method's `transition(hidden, state, write=...)`.
 The runtime retains ownership of attention, position accounting, token budgets,
@@ -155,3 +156,10 @@ See [pretraining](pretraining.md) for joint theta/phi updates. Shared
 checkpoint save/load is supported; live-state and optimizer-resume serialization
 are not yet provided. No held-out continual-learning quality claim follows from
 the protocol tests alone.
+
+
+Episode memory policy, worker ownership, local question counts and the boundary
+loss convention are detailed in [pretraining](pretraining.md#choose-whether-episodes-share-memory).
+The same reset/carry policy applies to standard AdamW and custom checkpoint
+updates. Custom objectives keep the existing callable interface and receive
+causally aligned targets, including lookahead labels in standard training.

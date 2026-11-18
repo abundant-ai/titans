@@ -40,10 +40,53 @@ contains attention input and a memory read. Connection parameters are registered
 PyTorch parameters: they join phi, receive gradients, and are saved with the model.
 Mutable temporal buffers belong in the stream's `MemoryState`, not in a connection.
 
-The factory receives `(layer_index, hidden_size)`, so the agent can vary wiring
-by layer. `RuntimeConfig.memory_layers` chooses placement. A connection can put
-memory before attention, run it alongside attention, prepend retrieved context,
-or update it from attention outputs. Each layer gets independent module instances.
+## Choosing decoder layers
+
+`RuntimeConfig.memory_layers` lists the zero-based decoder-layer indices where
+the runtime creates a memory module and its connection. In a 24-layer decoder,
+the valid indices are 0 through 23. The default `memory_layers=(0,)` selects
+only the first decoder layer.
+
+| Configuration for a 24-layer decoder | Selected layers |
+| --- | --- |
+| `memory_layers=(0,)` | First layer only |
+| `memory_layers=(0, 6, 12, 18)` | Four layers spread through the decoder |
+| `memory_layers=tuple(range(24))` | All 24 layers |
+
+With the default MAC connection, the first configuration produces this stack.
+
+```text
+Token embeddings
+    |
+Layer 0     MAC attention and neural memory -> feed-forward network
+    |
+Layer 1     ordinary attention              -> feed-forward network
+    |
+   ...
+    |
+Layer 23    ordinary attention              -> feed-forward network
+    |
+Vocabulary prediction
+```
+
+At a selected layer, MAC uses that decoder layer's existing attention projection
+weights. It adds memory retrievals to the attention input, writes from the
+attention output, and gates the output with a memory read. The layer's
+feed-forward network still follows this operation. Unselected layers execute
+the runtime's ordinary sliding-window attention with the persistent prefix.
+
+`connection_factory` determines the connection used at the selected indices.
+Its default is MAC. Supplying `titans_mag_connection` chooses MAG at those
+indices, and a custom factory can choose a different connection for each
+`layer_index`. The factory receives `(layer_index, hidden_size)`.
+
+Each selected layer owns an independent memory module, connection instance,
+and memory state in each stream. Adding a selected layer adds another set of
+memory parameters and stream state. A stream's memory at layer 0 is separate
+from its memory at layer 6.
+
+The examples above illustrate placement options. Their accuracy and speed
+depend on the backbone, training setup, and workload.
 
 ## MAC default and its limits
 
@@ -107,3 +150,41 @@ use the same PyTorch runtime for local training and inference.
 
 The original optimization audit describes commit `1cf5ad1`; its source hashes do
 not describe this architecture extension. GPU checks run manually on Modal.
+
+
+## Memory queries and training parameters
+
+At each selected decoder layer, the memory's own QKV projection receives the
+normalized hidden state. A causal depthwise convolution and SiLU follow that
+projection. Splitting its channels gives query, key and value, and L2
+normalization produces the final query. These projection parameters belong to
+the outer-trained shared parameters. Each arriving token gets its own query.
+
+For the pre-attention MAC read, that query reads the segment-start snapshot.
+The attention output supplies a second projected query for the post-write gate.
+A 16-token write chunk shares its gradient evaluation weights; its tokens still
+have individual keys, values, queries and retrieved outputs.
+
+Fresh models use a residual GELU memory network with fourfold expansion.
+Its implementation choices and historical checkpoint behavior are described in
+[paper alignment](paper_alignment.md#memory-network-used-by-fresh-models).
+
+Persistent embeddings train with the outer parameters, including when the
+backbone is frozen. Standard training refreshes their prefix representations
+after truncation so later losses can reach them. Runtime inference keeps those
+learned embeddings fixed while fast memory adapts.
+
+## Layer-placement experiments
+
+The following are candidate configurations for comparing placement. The current
+default remains `memory_layers=(0,)`.
+
+| Backbone | Four distributed layers | All layers |
+| --- | --- | --- |
+| Scratch Llama, 24 layers | `(5, 11, 17, 23)` | `tuple(range(24))` |
+| Qwen2.5-1.5B, 28 layers | `(6, 13, 20, 27)` | `tuple(range(28))` |
+
+Use the same document/QA data and training token budget across candidates.
+Record delayed-fact accuracy, overwrite accuracy, parameter counts, peak memory,
+and tokens per second. Adding layers changes both placement and capacity.
+Select a default using measurements from the intended workload.

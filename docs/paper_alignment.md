@@ -16,7 +16,7 @@ or its published evaluation results.
 
 | Paper component | Implementation | Evidence |
 | --- | --- | --- |
-| Associative squared-error objective, eq. 12 | Bias-free MLP, SiLU hidden layers, **summed** squared error | Independent autograd oracle and finite differences |
+| Associative squared-error objective, eq. 12 | Residual GELU MLP with internal LayerNorm, **summed** squared error | Independent autograd oracle and finite differences |
 | Forgetting and momentum, eqs. 13–14 | Input-dependent alpha, eta and theta; independent fast weights and momentum per stream | Final matrices and outer derivatives compared with literal recurrence |
 | Chunk-start gradients, §3.2 | All gradients in a write chunk evaluated at its initial weights | Oracle evaluates each token's gradient separately at those weights |
 | Retrieval, eq. 15 | Forward pass through committed fast weights | Read-only policy and source-preservation tests |
@@ -95,3 +95,36 @@ its checkpoint. Keep answers out of the committed stream and report ingestion
 cost, generation cost and memory use alongside accuracy. Local attention across
 multiple layers can carry information beyond one layer's window, so a single
 window-length distractor gap does not by itself isolate neural memory.
+
+
+## Memory network used by fresh models
+
+Fresh built-in memories use the network described in the published paper's
+[section 3.3](https://proceedings.neurips.cc/paper_files/paper/2025/file/a4ca07aa108036f80cbb5b82285fd4b1-Paper-Conference.pdf).
+
+```text
+M(x) = x + LayerNorm(W_out GELU(W_in x))
+```
+
+The default has two matrices and fourfold hidden expansion, giving
+128 -> 512 -> 128 at the default memory width. An explicit
+`memory_hidden_dim` or `memory_depth` still selects the requested dimensions.
+LayerNorm is non-affine with epsilon 1e-5, an explicit implementation choice
+where the paper leaves those details unspecified. The existing projected,
+normalized and gated readout remains outside this fast-memory function.
+
+Both retrieval and the associative write loss use this same network.
+The analytic write derivative includes exact GELU and LayerNorm derivatives;
+outer differentiation passes through the resulting write. Eager and compiled
+kernels share this definition. The query/key/value preprocessing still uses its
+causal convolution and SiLU activation.
+
+New checkpoints record `memory_variant="paper"` in each built-in memory config.
+Historical checkpoints missing this field load as `"legacy"` and retain their
+saved dimensions and SiLU network. Selecting `memory_variant="legacy"` explicitly
+also supports controlled comparisons. The low-level numerical kernels retain
+their historical default and select the new network with `paper=True`.
+
+The published training lengths do not establish our gradient-cut policy. The
+library's unroll, prefix-refresh and episode reset/carry rules are documented in
+[pretraining](pretraining.md).

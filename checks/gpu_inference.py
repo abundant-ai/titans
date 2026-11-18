@@ -1,5 +1,6 @@
 """Manually invoked CUDA inference checks; excluded from default pytest and CI."""
 
+import copy
 from dataclasses import replace
 from pathlib import Path
 
@@ -114,39 +115,73 @@ def test_liger_rotary_matches_llama() -> None:
         torch.testing.assert_close(got, want, rtol=0.02, atol=0.02)
 
 
+@pytest.mark.parametrize("paper", [False, True], ids=["legacy", "paper"])
 @torch.no_grad()
-def test_cuda_compiled_memory_matches_eager() -> None:
-    """Compare compiled test-time memory transitions with their eager implementation."""
+def test_cuda_compiled_memory_matches_eager(paper: bool) -> None:
+    """Compare compiled test-time transitions for both supported memory networks.
+
+    Args:
+        paper: Use the residual GELU/LayerNorm network instead of legacy SiLU.
+    """
     raw = case(2, 7)
     weights = tuple(w.detach().float().cuda() for w in raw[0])
     momentum = tuple(w.detach().float().cuda() for w in raw[1])
     operands = tuple(t.detach().float().cuda() for t in raw[2:])
-    actual = compiled_chunk_update(weights, momentum, *operands)
-    expected = chunk_update(weights, momentum, *operands)
+    actual = compiled_chunk_update(weights, momentum, *operands, paper=paper)
+    expected = chunk_update(weights, momentum, *operands, paper=paper)
     for got, want in zip(actual[0] + actual[1], expected[0] + expected[1], strict=True):
         torch.testing.assert_close(got, want, rtol=1e-4, atol=1e-5)
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+@pytest.mark.parametrize("variant", ["legacy", "paper"])
 @torch.no_grad()
-def test_qwen_memory_jit_matches_eager() -> None:
-    """Compare BF16 Qwen-width memory reads and committed weights across prefill and decode."""
+def test_qwen_memory_jit_matches_eager(dtype: torch.dtype, variant: str) -> None:
+    """Compare Qwen-width prefill and decode against eager and an FP32 reference.
+
+    BF16 projection kernels can round differently before their outputs enter the
+    FP32 memory update. The residual LayerNorm network amplifies those differences
+    over repeated writes. Keep strict FP32 checks and compare both BF16 paths to
+    the same full-precision calculation with identical stored weights and inputs.
+
+    Args:
+        dtype: Projection storage and input dtype; fast weights remain FP32.
+        variant: Legacy SiLU or paper residual GELU/LayerNorm memory network.
+    """
     torch.compiler.reset()
     torch.manual_seed(38)
-    settings = TitansConfig(memory_dim=64, memory_hidden_dim=128, compile_kernels=True)
-    actual = NeuralMemory(1536, settings).to(device="cuda", dtype=torch.bfloat16)
+    settings = TitansConfig(memory_dim=64, memory_hidden_dim=128, compile_kernels=True,
+                            memory_variant=variant)
+    actual = NeuralMemory(1536, settings).to(device="cuda", dtype=dtype)
     expected = NeuralMemory(1536, replace(settings, compile_kernels=False)).to(
-        device="cuda", dtype=torch.bfloat16,
+        device="cuda", dtype=dtype,
     )
     actual.gates.weight.normal_(std=0.01)
     actual.mix_gate.weight.normal_(std=0.01)
     expected.load_state_dict(actual.state_dict())
+    reference = copy.deepcopy(expected).float()
     try:
-        first, second = actual.initial_state(), expected.initial_state()
+        first, second, third = actual.initial_state(), expected.initial_state(), reference.initial_state()
         for count in (4, 256, 1, 1):
-            hidden = torch.randn(1, count, 1536, device="cuda", dtype=torch.bfloat16)
+            hidden = torch.randn(1, count, 1536, device="cuda", dtype=dtype)
             got, want = actual(hidden, first), expected(hidden, second)
-            torch.testing.assert_close(got, want, rtol=0.04, atol=0.002)
-            for got_weight, want_weight in zip(first.weights, second.weights, strict=True):
-                torch.testing.assert_close(got_weight, want_weight, rtol=0.002, atol=0.0002)
+            exact = reference(hidden.float(), third)
+            if dtype == torch.float32:
+                torch.testing.assert_close(got, want, rtol=0.002, atol=0.0002)
+                for a, b in zip(first.tensors(), second.tensors(), strict=True):
+                    torch.testing.assert_close(a, b, rtol=0.002, atol=0.0002)
+            else:
+                torch.testing.assert_close(got, want, rtol=0.04, atol=0.002)
+                # Two percent is a norm-wise BF16 error budget, not a per-element
+                # relative error at near-zero weights. The FP32 and fixed-operand
+                # checks above separately constrain the transition mathematics.
+                for output in (got, want):
+                    assert (output.float() - exact).norm() <= 0.02 * exact.norm().clamp_min(1e-12)
+                for state in (first, second):
+                    for a, b in zip(state.tensors(), third.tensors(), strict=True):
+                        assert a.isfinite().all()
+                        assert (a.float() - b).norm() <= 0.02 * b.norm().clamp_min(1e-12)
+                for a, b in zip(first.weights, second.weights, strict=True):
+                    assert (a - b).abs().max() < 0.001
     finally:
         torch.compiler.reset()

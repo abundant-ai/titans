@@ -60,12 +60,20 @@ outer AdamW optimizer updates backbone parameters theta and shared memory,
 connection and persistent-prefix parameters phi. Active W is never an outer
 optimizer parameter. Its learned initialization is part of phi.
 
-Backpropagation includes memory writes within `sequence_length`. At each unroll
-boundary the trainer preserves state values but detaches their history. It
-accumulates gradients until `tokens_per_step` or the end of the input/budget.
-Cached activations carried across an optimizer step were computed using older
-parameters; this is truncated online training, without replay. The model returns
-to frozen-backbone execution after fitting, including on a training failure.
+Backpropagation includes memory writes within `sequence_length`. The trainer
+scores the next known supervised token before detaching a window's prediction.
+The target is used only as a label at that point; its embedding enters the stream
+when forwarding resumes. Eager and Liger use the same labels and normalization.
+This applies to language-model targets and explicit QA targets, including an
+answer beginning exactly at a window boundary.
+
+At a cut, memory values and real-token caches survive while their gradient history
+is detached. Persistent-prefix KV is recomputed using the current parameters so
+later windows can train the persistent embeddings. Prefix refresh does not
+write to fast memory, advance real-token positions, or consume token budget.
+Real-token caches carried across an optimizer step still reflect the parameters
+used when those tokens arrived. The model returns to frozen-backbone execution
+after fitting, including on a training failure.
 
 `TrainingConfig.freeze_backbone=None` selects joint training for scratch Llama
 and frozen-backbone training for Qwen. Set it explicitly to `True` for memory-only
@@ -85,16 +93,11 @@ autocast for backbone operations. With default storage, parameters, AdamW state,
 fast weights, momentum and loss reductions use FP32. Explicit storage dtypes
 and custom update rules retain their original ownership.
 
-At a training detach, the trainer saves the carried logits before stepping the
-optimizer. The next supervised target scores that prediction once. Autograd
-continues from the next live prediction. Fused Liger loss uses hidden states
-within the live window.
-
 ## Manual H100 validation
 
 ```bash
 uvx modal run --env testing -m checks.modal_pretraining \
-  --output validation/h100_segmented_mac.json
+  --output validation/h100_memory_gradients.json
 ```
 
 The job compares eager and Liger forward/backward passes on the fixed scratch
@@ -103,5 +106,67 @@ prefill throughput and vocabulary-head calls for tokenwise and block SDPA on the
 same weights. Optimizer-step tests run on CPU. GPU checks are
 manual and outside CI.
 
-The [H100 report](../validation/h100_segmented_mac.json) includes the fixed-input
+The [H100 report](../validation/h100_memory_gradients.json) includes the fixed-input
 losses, gradient differences, throughput, peak allocation and source hashes.
+
+
+## Choose whether episodes share memory
+
+**Set `TrainingConfig.episode_memory` explicitly when preparing a training run.**
+
+| Value | Behavior at the start of each episode | Use |
+| --- | --- | --- |
+| `"reset"` (default) | Fresh fast weights from learned initialization, zero momentum, empty pending writes and document caches | Independent examples, users, or worker-local streams |
+| `"carry"` | Continue the previous episode's document state inside this `fit` call | Consecutive parts of one ordered continual-learning stream |
+
+```python
+# Independent episodes, including datasets partitioned between workers.
+config = TrainingConfig(
+    output_dir=Path("checkpoints/independent"),
+    max_tokens=10_000_000,
+    objective="language_modeling",
+    episode_memory="reset",
+)
+
+# Consecutive episodes from the same document stream.
+config = TrainingConfig(
+    output_dir=Path("checkpoints/continuous"),
+    max_tokens=10_000_000,
+    objective="language_modeling",
+    episode_memory="carry",
+)
+result = model.fit(episodes, config)
+continuing_state = result.final_state
+```
+
+Carry mode preserves fast weights, momentum, incomplete write chunks, convolution
+history, segment retrieval state, real-token KV, and stream counters. Gradient
+history is detached between episodes. Persistent-prefix representations are
+refreshed from the current learned embeddings.
+
+Episode boundaries still delimit supervised sequences. The first document token
+of a carried episode is not scored against the preceding episode's last prediction.
+Within each episode, next-token targets cross execution blocks, training windows,
+and document boundaries. For a fully continuous language-model objective, place
+the related documents in one episode.
+
+`TrainingQuestion(after_documents=0, ...)` runs before any documents in the
+current episode. In carry mode, it can already access documents from preceding
+episodes. All `after_documents` counts remain local to their episode, while
+`state.documents_seen` is cumulative. Standard QA branches discard teacher tokens.
+Custom updates through `learn` can deliberately change the continuing memory.
+
+Both modes retain learned shared parameters and any trained backbone weights.
+A new `fit` call starts a new stream. Carry mode returns its final in-memory
+state in `TrainingResult.final_state`; `save_pretrained` saves model parameters,
+and does not serialize that live stream or resume optimizer state.
+
+**This flag does not enable parallel or distributed training.** Each worker must
+own its model execution and stream state. Use `"reset"` for independent episodes.
+Use `"carry"` only where each worker receives consecutive parts of its own stream.
+The built-in trainer remains sequential and single-device.
+
+For custom objectives, `LossContext.state` describes the forwarded prefix. A
+final lookahead target may appear in `targets` before that token is ingested.
+Callbacks can occur for document or answer supervision, including a lookahead
+answer at the end of its question prompt.

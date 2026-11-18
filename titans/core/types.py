@@ -27,7 +27,16 @@ class Question:
 
 @dataclass(frozen=True)
 class TrainingQuestion:
-    """Supervision after exactly ``after_documents`` documents in an episode."""
+    """A question scheduled after the first ``after_documents`` documents.
+
+    With ``after_documents=k``, the trainer has read ``episode.documents[:k]``
+    in the supplied order. For documents ``(d1, d2)``, use 0 to ask before
+    either document, 1 to ask after d1, or 2 to ask after both. The question
+    can refer to any fact in the documents seen so far.
+
+    In standard QA training, each question at the same count gets its own
+    copy of the document stream state. Its prompt and answer stay on that copy.
+    """
 
     after_documents: int
     question: Question
@@ -36,7 +45,11 @@ class TrainingQuestion:
 
 @dataclass(frozen=True)
 class TrainingEpisode:
-    """An independent stream; answers never become part of its document memory."""
+    """Ordered documents and questions with episode-local checkpoint counts.
+
+    TrainingConfig.episode_memory selects fresh or carried stream state.
+    Standard QA teacher tokens remain on disposable branches.
+    """
 
     episode_id: str
     documents: tuple[Document, ...]
@@ -78,6 +91,12 @@ class RuntimeConfig:
 class TrainingConfig:
     """Training budget and optimization settings.
 
+    episode_memory="reset" starts independent memory at every episode (default).
+    episode_memory="carry" continues document state sequentially within one fit
+    call, with detached history between episodes. It does not share state between
+    workers or enable parallel training. Question counts stay episode-local.
+    Episode boundaries separate supervised sequences in both modes.
+
     freeze_backbone=None selects joint training for scratch Llama and memory-only
     training for Qwen. An explicit boolean overrides that training selection.
 
@@ -97,6 +116,7 @@ class TrainingConfig:
     seed: int = 0
     max_grad_norm: float = 1.0
     activation_checkpointing: bool = True
+    episode_memory: Literal["reset", "carry"] = field(default="reset", kw_only=True)
 
     def __post_init__(self) -> None:
         """Validate the finite token budget and optimizer controls."""
@@ -105,6 +125,8 @@ class TrainingConfig:
         if any(not math.isfinite(value) or value <= 0
                for value in (self.learning_rate, self.max_grad_norm)):
             raise ValueError("learning_rate and max_grad_norm must be positive")
+        if self.episode_memory not in ("reset", "carry"):
+            raise ValueError("episode_memory must be 'reset' or 'carry'")
         if self.objective not in ("language_modeling", "document_qa", "mixed"):
             raise ValueError("Unknown training objective")
 
@@ -113,9 +135,10 @@ class TrainingConfig:
 class TrainingResult:
     """Measurements for one fit call and an optional continuing stream.
 
-    Default AdamW training averages loss using Objective weights. Custom-update
-    training reports the mean normalized checkpoint loss and returns final_state;
-    W-only changes live there and are not part of the shared-parameter checkpoint.
+    Default AdamW training averages loss using Objective weights and returns
+    final_state in episode_memory="carry" mode. Custom-update training reports
+    the mean normalized checkpoint loss and always returns final_state.
+    Active W lives in that state and is not saved in the model checkpoint.
     """
 
     checkpoint_path: Path

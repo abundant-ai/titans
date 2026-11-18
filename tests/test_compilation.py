@@ -3,6 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import torch
 
 from tests.support.memory import case
@@ -21,12 +22,17 @@ from titans.optim.kernels import compiled_chunk_update
 from titans.runtime.connections import residual_connection
 
 
-def test_compiled_update_and_outer_gradients() -> None:
-    """Compiled final states and all outer derivatives must match literal autograd."""
+@pytest.mark.parametrize("paper", [False, True])
+def test_compiled_update_and_outer_gradients(paper: bool) -> None:
+    """Compare compiled states and outer derivatives to literal autograd.
+
+    Args:
+        paper: Whether to exercise the residual GELU/LayerNorm memory.
+    """
     inputs = case(2, 7)
     leaves = inputs[0] + inputs[1] + inputs[2:]
-    actual = compiled_chunk_update(*inputs)
-    expected = reference_chunk(*inputs)
+    actual = compiled_chunk_update(*inputs, paper=paper)
+    expected = reference_chunk(*inputs, paper=paper)
     for got, want in zip(actual[0] + actual[1], expected[0] + expected[1], strict=True):
         torch.testing.assert_close(got, want, rtol=1e-9, atol=1e-9)
     actual_gradients = torch.autograd.grad(sum(t.square().sum() for t in actual[0] + actual[1]),

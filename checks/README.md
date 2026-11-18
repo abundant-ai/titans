@@ -11,6 +11,13 @@ PyTorch and Liger environment. The checks cover Llama and Qwen2, native streamin
 answer isolation, checkpoint restoration, Liger kernel outputs, and compiled memory
 updates. They use small offline models and run outside CI and default pytest discovery.
 
+Memory checks cover both legacy SiLU and residual GELU/LayerNorm networks.
+The full memory path is compared in FP32 and BF16. BF16 projections can round
+differently between eager and compiled kernels, and those differences accumulate
+in fast memory. Both BF16 paths are also checked against an FP32 calculation
+using the same stored weights and inputs, with a 2% relative L2 error budget.
+Separate fixed-operand checks retain tighter tolerances on the update itself.
+
 No training loop, backward pass, `fit`, `learn` or optimizer step is invoked.
 Document ingestion still executes each method's test-time memory transition.
 Shared model parameters remain unchanged. CPU tests exercise the training and

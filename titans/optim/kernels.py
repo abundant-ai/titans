@@ -14,7 +14,7 @@ from titans.methods.titans import chunk_update, combine_read, mlp, project_token
 @torch.compile(fullgraph=True, dynamic=False, options={"unroll_reductions_threshold": 1})
 def compiled_chunk_update(
     weights: tuple[Tensor, ...], momentum: tuple[Tensor, ...], keys: Tensor, values: Tensor,
-    alpha: Tensor, eta: Tensor, theta: Tensor,
+    alpha: Tensor, eta: Tensor, theta: Tensor, *, paper: bool = False,
 ) -> tuple[tuple[Tensor, ...], tuple[Tensor, ...]]:
     """Compile the complete fixed-size write chunk, including gate scan and MLP gradients.
 
@@ -26,25 +26,27 @@ def compiled_chunk_update(
         alpha: Forget gates [batch, chunk].
         eta: Momentum gates [batch, chunk].
         theta: Inner learning rates [batch, chunk].
+        paper: Select the residual GELU/LayerNorm network.
 
     Returns:
         Updated weights and momentum with the eager kernel's exact semantics.
     """
-    return chunk_update(weights, momentum, keys, values, alpha, eta, theta)
+    return chunk_update(weights, momentum, keys, values, alpha, eta, theta, paper=paper)
 
 
 @torch.compile(fullgraph=True, dynamic=True)
-def compiled_read(weights: tuple[Tensor, ...], queries: Tensor) -> Tensor:
+def compiled_read(weights: tuple[Tensor, ...], queries: Tensor, *, paper: bool = False) -> Tensor:
     """Compile deep-memory retrieval, supporting varying query-block lengths.
 
     Args:
         weights: Committed fast weights.
         queries: Normalized query vectors [batch, tokens, dimension].
+        paper: Select the residual GELU/LayerNorm network.
 
     Returns:
         Retrieved value vectors; no state is mutated.
     """
-    return mlp(weights, queries)
+    return mlp(weights, queries, paper=paper)
 
 
 @torch.compile(fullgraph=True, dynamic=True)

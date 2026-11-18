@@ -222,3 +222,13 @@ See [GPU runtime](docs/gpu_runtime.md), [paper alignment](docs/paper_alignment.m
 and [earlier pilot notes](docs/pilot_notes.md). Historical H100 measurements in
 [validation](validation/README.md) predate this refactor; GPU performance and
 held-out QA quality must be measured for the new protocols.
+
+
+### Memory across training episodes
+
+`TrainingConfig(…, episode_memory="reset")` starts each episode with fresh
+memory and is the default. Use `episode_memory="carry"` to continue document
+memory sequentially across episodes within one `fit` call. Question checkpoint
+counts stay local to each episode. This option does not enable parallel execution
+or share state between workers. See [episode memory policy](docs/pretraining.md#choose-whether-episodes-share-memory)
+for examples, gradient boundaries and checkpoint behavior.

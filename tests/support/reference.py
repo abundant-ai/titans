@@ -15,6 +15,7 @@ def reference_chunk(
     theta: Tensor,
     *,
     create_graph: bool = True,
+    paper: bool = False,
 ) -> tuple[tuple[Tensor, ...], tuple[Tensor, ...]]:
     """Execute equations 12--14 literally, at the section 3.2 chunk evaluation point.
 
@@ -27,6 +28,7 @@ def reference_chunk(
         eta: Momentum coefficients [batch, tokens].
         theta: Learning rates [batch, tokens].
         create_graph: Whether the reference must retain outer training gradients.
+        paper: Evaluate residual GELU and non-affine LayerNorm before the loss.
 
     Returns:
         Final weights and momentum, retaining the outer autograd graph.
@@ -38,7 +40,10 @@ def reference_chunk(
             for index, weight in enumerate(weights):
                 predicted = torch.bmm(predicted, weight.transpose(1, 2))
                 if index + 1 < len(weights):
-                    predicted = F.silu(predicted)
+                    predicted = F.gelu(predicted) if paper else F.silu(predicted)
+            if paper:
+                predicted = keys[:, token:token + 1] + F.layer_norm(
+                    predicted, (predicted.shape[-1],), eps=1e-5)
             loss = (predicted - values[:, token:token + 1]).square().sum()
             gradient = torch.autograd.grad(loss, weights, create_graph=create_graph)
         with torch.set_grad_enabled(create_graph):

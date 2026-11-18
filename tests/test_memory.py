@@ -9,25 +9,39 @@ from tests.support.reference import reference_chunk
 from titans.methods.titans import NeuralMemory, TitansConfig, chunk_update, mlp
 
 
+@pytest.mark.parametrize("paper", [False, True])
 @pytest.mark.parametrize("depth", [1, 2, 3])
 @pytest.mark.parametrize("tokens", [1, 2, 7, 32])
 @pytest.mark.parametrize("extreme_gates", [False, True])
-def test_update_matches_equations(depth: int, tokens: int, extreme_gates: bool) -> None:
-    """Compare all final weights and momentum against literal autograd equations."""
+def test_update_matches_equations(depth: int, tokens: int, extreme_gates: bool, paper: bool) -> None:
+    """Compare final fast weights and momentum against literal autograd.
+
+    Args:
+        depth: Number of memory matrices.
+        tokens: Chunk length.
+        extreme_gates: Include exact zero and one gates.
+        paper: Select the residual GELU/LayerNorm memory network.
+    """
     inputs = case(depth, tokens, extreme_gates=extreme_gates)
-    actual = chunk_update(*inputs)
-    expected = reference_chunk(*inputs)
+    actual = chunk_update(*inputs, paper=paper)
+    expected = reference_chunk(*inputs, paper=paper)
     for got, want in zip(actual[0] + actual[1], expected[0] + expected[1], strict=True):
         torch.testing.assert_close(got, want, rtol=1e-10, atol=1e-10)
 
 
+@pytest.mark.parametrize("paper", [False, True])
 @pytest.mark.parametrize("depth", [1, 2, 3])
-def test_outer_derivatives_match_autograd(depth: int) -> None:
-    """Check differentiation through the update, including its inner gradients."""
+def test_outer_derivatives_match_autograd(depth: int, paper: bool) -> None:
+    """Check differentiation through the update and its inner gradients.
+
+    Args:
+        depth: Number of memory matrices.
+        paper: Select the residual GELU/LayerNorm memory network.
+    """
     inputs = case(depth, 7)
     leaves = inputs[0] + inputs[1] + inputs[2:]
-    actual = chunk_update(*inputs)
-    expected = reference_chunk(*inputs)
+    actual = chunk_update(*inputs, paper=paper)
+    expected = reference_chunk(*inputs, paper=paper)
     loss_actual = sum(t.square().sum() for t in actual[0] + actual[1])
     loss_expected = sum(t.square().sum() for t in expected[0] + expected[1])
     gradients_actual = torch.autograd.grad(loss_actual, leaves, retain_graph=True)
@@ -36,8 +50,13 @@ def test_outer_derivatives_match_autograd(depth: int) -> None:
         torch.testing.assert_close(got, want, rtol=1e-9, atol=1e-9)
 
 
-def test_finite_difference_gradient() -> None:
-    """Check outer gradients numerically, independently of the analytic oracle."""
+@pytest.mark.parametrize("paper", [False, True])
+def test_finite_difference_gradient(paper: bool) -> None:
+    """Check outer gradients against finite differences.
+
+    Args:
+        paper: Select the residual GELU/LayerNorm memory network.
+    """
     inputs = case(2, 2)
     weights, momentum, keys, values, alpha, eta, theta = inputs
 
@@ -53,7 +72,7 @@ def test_finite_difference_gradient() -> None:
         Returns:
             Sum of squared updated weights.
         """
-        updated, _ = chunk_update(weights, momentum, k, values, a, e, t)
+        updated, _ = chunk_update(weights, momentum, k, values, a, e, t, paper=paper)
         return sum(w.square().sum() for w in updated)
 
     assert torch.autograd.gradcheck(update_loss, (alpha, eta, theta, keys), fast_mode=True)

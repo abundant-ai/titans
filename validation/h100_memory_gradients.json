@@ -1,0 +1,62 @@
+{
+  "device": "NVIDIA H100 80GB HBM3, GPU-26286e57-2019-d856-cdaf-601992f5481f",
+  "torch": "2.9.1+cu128",
+  "cuda": "12.8",
+  "transformers": "4.57.1",
+  "liger_kernel": "0.6.4",
+  "source_sha256": {
+    "titans/__init__.py": "32dd3fe595169546b951236ddda6addcfa4028f32ca1a828d1cfbf9cc1349391",
+    "titans/core/__init__.py": "391591b728cb77d64e1f7e2ff204e68292bbf803b13d0b56978d139d8b5ac7a0",
+    "titans/core/protocols.py": "8b6fbb399a54f0f5e431febc19317a4aff01eb91228faa9f077616c6f2b2859a",
+    "titans/core/types.py": "3de369ba2f3f4800c82281e005347d998d1322b07519ebc88dde8f83cdbec351",
+    "titans/methods/__init__.py": "46b4cb3ecf334dabf23a141324c37811a05f0655e3b0ea99b2fc7c8c35cd7145",
+    "titans/methods/titans.py": "ddb1482b293fb66a8730f0244bdcb29c56174b3255139e37f0c2542dbb98f43c",
+    "titans/optim/__init__.py": "97809859c569007d5f4c89f584935f7f383ad27adbcba3c962876547df61caa0",
+    "titans/optim/gpu_ops.py": "e60491943d775df71be0bbcce8e513093f03197ca60ea733ed66c3a7cb5317f7",
+    "titans/optim/kernels.py": "3081de45c7c600f4525083cee67854a41557b018038275536e54d71cf423c32a",
+    "titans/runtime/__init__.py": "64f71545f1f74236176a709924410fecd79db1aeafb390907b656d5770e15b13",
+    "titans/runtime/backbones.py": "ded9b271367ce29a7948e18a816464b86652274644a46839f6715575ec73b047",
+    "titans/runtime/connections.py": "92fb13cf65e6c1827257cdb0c0def35da3ec13b6555083571dfca3bbf521e20b",
+    "titans/runtime/model.py": "2b502d3bcd820e58425a123c60cba8906a9cf234f273ead82778a7a4e3c7ea45",
+    "titans/runtime/state.py": "f74d35c8e2de8041f81cfb476e58b4fac044a505d038d2c6aa0c3dc947e986d4",
+    "titans/training/__init__.py": "3a35133a4081cdf9292e72e40e35dcc9bb139b26d1ac5555eb7d65644392f72e",
+    "titans/training/learning.py": "adeac785a7b291ac9bb05f9b770d55526e16f06499ee87cd4f14a655cfd2e5cc",
+    "titans/training/trainer.py": "bdddcbf880b1d30efb8e3af1d1846347d555cd803bd22f4e7a0018c86b6c51d9",
+    "checks/__init__.py": "a7a8f3d710fda90978d1d8f3df83c31cd089d592419b84b346b2952a8a818356",
+    "checks/conftest.py": "1ce812503f3abaf1c084c5e39a72606007a97d2d434ddf05fcb9ce7e5f40e60e",
+    "checks/gpu_inference.py": "d7fd6a1a12d7da0346eed4bb1d7235c937d2927f2ba5dd79d768d7875a16d1db",
+    "checks/modal_image.py": "4c75d9d50045e534e246feb3bc9bcb3f956c8f0c30a01c850272345773b59b24",
+    "checks/modal_inference.py": "022fb5a5b35a1f3e8a21b9f78f5be82760d7d38cb488562f24917f7dee83ac9f",
+    "checks/modal_pretraining.py": "44c7a733dd0a6762675344c04ab9aff9ef5637e9063934f09624729e7f111d06",
+    "checks/pretraining.py": "7293c561e6fc9f0ec690313a9bdea4c1649dbcb680ec5609e1a96f22cc9d83bf"
+  },
+  "results": {
+    "real_tokens": 33,
+    "segment": 512,
+    "write_chunk": 16,
+    "gradient_relative_l2": {
+      "backbone.lm_head.weight": 0.009335043840110302,
+      "backbone.model.layers.0.self_attn.q_proj.weight": 0.01490091159939766,
+      "memories.0.qkv.weight": 0.017956716939806938,
+      "memories.0.initial_weights.0": 0.017169632017612457
+    },
+    "eager_loss": 10.627996444702148,
+    "liger_loss": 10.626157760620117,
+    "prefill": {
+      "tokenwise_sdpa": {
+        "tokens_per_second": 46.9772766713254,
+        "peak_allocated_bytes": 2365691392,
+        "head_calls": 1,
+        "max_logit_error": 0.0
+      },
+      "block_sdpa": {
+        "tokens_per_second": 759.2954502119791,
+        "peak_allocated_bytes": 2363923968,
+        "head_calls": 1,
+        "max_logit_error": 0.017578125
+      }
+    }
+  },
+  "passed": true,
+  "elapsed_seconds": 52.599728386
+}

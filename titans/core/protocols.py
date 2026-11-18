@@ -199,6 +199,9 @@ class LossContext:
     Predictions are [targets, vocabulary]; targets are [targets]. During explicit
     QA learning, state is the pre-question stream, and the teacher-forced branch
     is disposable. A loss may use predictions, shared parameters, memory, or all.
+    Standard fit callbacks see the state after the forwarded block. The final
+    label can be a lookahead target that has not entered that state. Callback
+    grouping follows execution blocks and should not be used as an update clock.
     """
 
     predictions: Tensor
@@ -242,7 +245,8 @@ class DataGenerator(Protocol):
             seed: Explicit generation seed; no implicit global RNG contract.
 
         Returns:
-            A possibly lazy, single-pass iterable. Only an episode boundary resets state.
+            A possibly lazy, single-pass iterable. TrainingConfig.episode_memory
+            chooses whether episode boundaries reset state or carry it forward.
         """
         ...
 

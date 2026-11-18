@@ -7,10 +7,10 @@ the production update. Ordinary PyTorch operations retain outer gradients.
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import torch
 from torch import Tensor, nn
@@ -43,20 +43,30 @@ class TitansConfig(RuntimeConfig):
     evaluated at the chunk's initial weights and commit only complete chunks.
     Memory reads use the last committed weights. ``memory_layers`` is zero-based.
     Fast weights and their updates use float32 unless the whole model is float64.
+    Fresh models use a residual GELU network with non-affine LayerNorm (eps=1e-5).
+    An omitted hidden dimension expands the memory width by four. Legacy checkpoints
+    retain their original SiLU network through memory_variant="legacy".
     """
 
     memory_dim: int = 128
-    memory_hidden_dim: int = 256
+    memory_hidden_dim: int | None = None
     memory_depth: int = 2
     chunk_size: int = 16
     conv_kernel: int = 3
     max_inner_learning_rate: float = 0.01
     gate_bias: float = -4.0
     use_liger: bool = True
+    memory_variant: Literal["paper", "legacy"] = field(default="paper", kw_only=True)
 
     def __post_init__(self) -> None:
         """Validate the fixed runtime and this method's dimensions and update rates."""
         super().__post_init__()
+        if self.memory_hidden_dim is None:
+            object.__setattr__(self, "memory_hidden_dim", 4 * self.memory_dim)
+        if self.memory_variant not in ("paper", "legacy"):
+            raise ValueError("memory_variant must be paper or legacy")
+        if self.memory_variant == "paper" and self.memory_dim < 2:
+            raise ValueError("Paper memory requires memory_dim >= 2 for LayerNorm")
         if min(self.memory_dim, self.memory_hidden_dim, self.memory_depth,
                self.chunk_size, self.conv_kernel) < 1:
             raise ValueError("Memory dimensions, chunk size and kernel must be positive")
@@ -66,12 +76,14 @@ class TitansConfig(RuntimeConfig):
             raise ValueError("gate_bias must be finite")
 
 
-def mlp(weights: tuple[Tensor, ...], inputs: Tensor) -> Tensor:
-    """Evaluate a bias-free batched MLP with SiLU hidden activations.
+def mlp(weights: tuple[Tensor, ...], inputs: Tensor, *, paper: bool = False) -> Tensor:
+    """Evaluate the selected batched fast-memory network.
 
     Args:
         weights: Matrices shaped [batch, output, input], one per layer.
         inputs: Keys or queries shaped [batch, tokens, dimension].
+        paper: Use GELU and residual, non-affine LayerNorm with epsilon 1e-5.
+            False retains the historical SiLU network.
 
     Returns:
         Predicted values with the same leading dimensions as inputs.
@@ -80,7 +92,9 @@ def mlp(weights: tuple[Tensor, ...], inputs: Tensor) -> Tensor:
     for index, weight in enumerate(weights):
         value = value @ weight.transpose(-1, -2)
         if index + 1 < len(weights):
-            value = F.silu(value)
+            value = F.gelu(value) if paper else F.silu(value)
+    if paper:
+        value = inputs + F.layer_norm(value, (value.shape[-1],), eps=1e-5)
     return value
 
 
@@ -124,6 +138,7 @@ def chunk_update(
     alpha: Tensor,
     eta: Tensor,
     theta: Tensor,
+    *, paper: bool = False,
 ) -> tuple[tuple[Tensor, ...], tuple[Tensor, ...]]:
     """Apply equations 13--14 with gradients evaluated at chunk-start weights.
 
@@ -135,6 +150,8 @@ def chunk_update(
         alpha: Forget gates [batch, tokens], in [0, 1].
         eta: Momentum gates [batch, tokens], in [0, 1].
         theta: Nonnegative inner learning rates [batch, tokens].
+        paper: Differentiate the GELU/residual/LayerNorm network when True.
+            LayerNorm is non-affine with epsilon 1e-5.
 
     Returns:
         Final weights and momentum. No input tensor is mutated. The loss is the
@@ -160,8 +177,20 @@ def chunk_update(
     for index, weight in enumerate(weights):
         z = activations[-1] @ weight.transpose(-1, -2)
         preactivations.append(z)
-        activations.append(F.silu(z) if index + 1 < len(weights) else z)
-    delta = 2 * (activations[-1] - values)
+        if index + 1 < len(weights):
+            z = F.gelu(z) if paper else F.silu(z)
+        activations.append(z)
+    if paper:
+        centered = activations[-1] - activations[-1].mean(dim=-1, keepdim=True)
+        inverse_std = (centered.square().mean(dim=-1, keepdim=True) + 1e-5).rsqrt()
+        normalized = centered * inverse_std
+        delta = 2 * (keys + normalized - values)
+        delta = inverse_std * (
+            delta - delta.mean(dim=-1, keepdim=True)
+            - normalized * (delta * normalized).mean(dim=-1, keepdim=True)
+        )
+    else:
+        delta = 2 * (activations[-1] - values)
     new_weights: list[Tensor] = []
     new_momentum: list[Tensor] = []
     for index in range(len(weights) - 1, -1, -1):
@@ -174,8 +203,13 @@ def chunk_update(
         )
         new_momentum.append(final_momentum_coeff * momentum[index] - momentum_gradient)
         if index:
-            sigmoid = preactivations[index - 1].sigmoid()
-            derivative = sigmoid * (1 + preactivations[index - 1] * (1 - sigmoid))
+            z = preactivations[index - 1]
+            if paper:
+                derivative = 0.5 * (1 + torch.erf(z / math.sqrt(2)))
+                derivative = derivative + z * torch.exp(-0.5 * z.square()) / math.sqrt(2 * math.pi)
+            else:
+                sigmoid = z.sigmoid()
+                derivative = sigmoid * (1 + z * (1 - sigmoid))
             delta = (delta @ weights[index]) * derivative
     return tuple(reversed(new_weights)), tuple(reversed(new_momentum))
 
@@ -363,7 +397,7 @@ class NeuralMemory(MemoryModule):
             before = end - int(post_write and closing)
             if before > start:
                 queries = query[:, start:before].clone(memory_format=torch.contiguous_format)
-                outputs.append(retrieve(state.weights, queries))
+                outputs.append(retrieve(state.weights, queries, paper=self.config.memory_variant == "paper"))
             if write:
                 updates = torch.cat((key[:, start:end], value[:, start:end], gates[:, start:end]), -1)
                 state.pending = torch.cat((state.pending, updates), 1)
@@ -371,12 +405,13 @@ class NeuralMemory(MemoryModule):
                     width = self.config.memory_dim
                     k, v, g = state.pending.split((width, width, 3), -1)
                     state.weights, state.momentum = update(
-                        state.weights, state.momentum, k, v, g[..., 0], g[..., 1], g[..., 2]
+                        state.weights, state.momentum, k, v, g[..., 0], g[..., 1], g[..., 2],
+                        paper=self.config.memory_variant == "paper",
                     )
                     state.pending = state.pending[:, :0].clone()
                     if post_write:
                         last = query[:, end - 1:end].clone(memory_format=torch.contiguous_format)
-                        outputs.append(retrieve(state.weights, last))
+                        outputs.append(retrieve(state.weights, last, paper=self.config.memory_variant == "paper"))
             start = end
         return combine(torch.cat(outputs, 1), hidden, self.read_norm.weight, self.read_norm.bias,
                        self.output.weight, self.mix_gate.weight, self.mix_gate.bias,

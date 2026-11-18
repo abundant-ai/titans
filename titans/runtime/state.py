@@ -54,6 +54,7 @@ class StreamState:
 
     _retrieval: dict[int, MemoryState] = field(default_factory=dict)
     _boundary_prediction: bool = False
+    _next_target_scored: bool = False
 
     @property
     def memory(self) -> Mapping[int, MemoryState]:
@@ -92,6 +93,7 @@ class StreamState:
             self._position, self._tokens, self._documents, logits, self._valid, hidden,
             _retrieval={i: m.copy(detach=detach) for i, m in self._retrieval.items()},
             _boundary_prediction=self._boundary_prediction,
+            _next_target_scored=self._next_target_scored,
         )
 
     def _detach(self) -> None:

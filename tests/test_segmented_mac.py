@@ -57,7 +57,9 @@ def test_segment_stream(tiny_model: TitansModel) -> None:
         tiny_model: Offline Llama or Qwen decoder and tokenizer.
     """
     config = replace(tiny_model.config, memory_layers=(0,), prefill_chunk_size=256, chunk_size=16)
-    model = TitansModel(tiny_model.backbone, tiny_model.tokenizer, config)
+    # The residual LayerNorm write can amplify FP32 roundoff in this four-wide
+    # fixture over 513 tokens. Use FP64 to isolate stream-order correctness.
+    model = TitansModel(tiny_model.backbone, tiny_model.tokenizer, config).double()
     ids = [7 + i % 12 for i in range(513)]
     block, single = model.start_stream(), model.start_stream()
     for boundary in (15, 16, 17, 255, 256, 257, 511, 512, 513):
@@ -118,7 +120,7 @@ def test_post_write_projection(tiny_model: TitansModel, count: int) -> None:
         history = torch.cat((before.conv_tail, memory.qkv(token).transpose(1, 2)), dim=-1)
         query = F.silu(memory.conv(history).transpose(1, 2)).chunk(3, -1)[0]
         query = F.normalize(query, dim=-1, eps=1e-6)
-        read = mlp(expected_state.weights, query)
+        read = mlp(expected_state.weights, query, paper=memory.config.memory_variant == "paper")
         reads.append(memory.output(memory.read_norm(read)) * memory.mix_gate(token).sigmoid())
     expected = torch.cat(reads, dim=1)
     torch.testing.assert_close(actual, expected)
@@ -129,48 +131,54 @@ def test_post_write_projection(tiny_model: TitansModel, count: int) -> None:
 
 
 @pytest.mark.parametrize("joint", [True, False])
-def test_detached_fused_boundary(tiny_model: TitansModel, tmp_path: Path,
-                                 monkeypatch: pytest.MonkeyPatch, joint: bool) -> None:
-    """Score a one-token answer after an actual optimizer step in both loss paths.
+def test_live_fused_boundary(tiny_model: TitansModel, tmp_path: Path,
+                            monkeypatch: pytest.MonkeyPatch, joint: bool) -> None:
+    """Score a boundary answer before updating, with equal eager/fused gradients.
 
     Args:
-        tiny_model: Offline decoder used to initialize both runs.
-        tmp_path: Temporary path for the training configuration.
-        monkeypatch: Injects a dense equivalent of the fused GPU objective.
-        joint: Whether the backbone also receives outer gradients.
+        tiny_model: Offline decoder with memory.
+        tmp_path: Unused checkpoint destination.
+        monkeypatch: Substitute a dense CPU implementation of fused cross-entropy.
+        joint: Include backbone parameters in the outer optimizer.
     """
     def dense_loss(weight: Tensor, hidden: Tensor, targets: Tensor) -> Tensor:
-        """Stand in for the GPU-only fused kernel with the equivalent CPU objective."""
+        """Compute summed cross-entropy for the CPU fused-kernel stand-in.
+
+        Args:
+            weight: Output projection matrix.
+            hidden: Normalized decoder activations.
+            targets: Next-token labels.
+
+        Returns:
+            Summed differentiable loss.
+        """
         return F.cross_entropy(F.linear(hidden, weight).float(), targets, reduction="sum")
 
     monkeypatch.setattr("titans.optim.gpu_ops.liger_loss", dense_loss)
-    config = TrainingConfig(tmp_path / "unused", max_tokens=8, sequence_length=4,
-                            tokens_per_step=4, freeze_backbone=not joint)
     models = [tiny_model, copy.deepcopy(tiny_model)]
-    reports = []
+    losses = []
     for fused, model in enumerate(models):
         model.backbone.requires_grad_(joint)
+        config = TrainingConfig(tmp_path / "unused", max_tokens=8, sequence_length=4,
+                                tokens_per_step=4, freeze_backbone=not joint)
         run = _TrainingRun(model, config, None)
         run.use_liger = bool(fused)
         state = model._new_state()
-        run.consume([6, 9, 12], state, supervise=True, live_states=(state,))
-        predicted = model._forward_tokens([8], state._copy(), last_only=True).detach()
-        run.consume([8], state, supervise=True, live_states=(state,))
-        assert run.steps == 1 and state._boundary_prediction
-        torch.testing.assert_close(state._next_logits, predicted)
-        start_loss = run.total_loss
+        predicted = model._forward_tokens([6, 9, 12, 8], state._copy(), last_only=True)
+        expected_loss = F.cross_entropy(predicted.flatten(0, 1), torch.tensor([10]))
+        expected_grad = torch.autograd.grad(expected_loss, run.parameters, allow_unused=True, retain_graph=True)
+        assert any(g is not None and torch.count_nonzero(g) for g in expected_grad)
+        before = [p.detach().clone() for p in run.parameters]
+        run.consume([6, 9, 12, 8], state, supervise=False, live_states=(state,),
+                    next_target=10, next_phase="answer")
+        assert run.steps == 1 and run.total_targets == 1
+        assert any(not torch.equal(a, b) for a, b in zip(before, run.parameters))
+        assert run.total_loss == pytest.approx(expected_loss.item())
         run.consume([10], state, supervise=True, live_states=(state,), phase="answer")
-        expected = F.cross_entropy(predicted[0].float(), torch.tensor([10])).item()
-        assert run.total_loss - start_loss == pytest.approx(expected)
-        gradients = torch.autograd.grad(sum(run.losses), run.parameters, allow_unused=True,
-                                        retain_graph=True)
-        assert all(g is None or not torch.count_nonzero(g) for g in gradients)
-        run.flush((state,), final=True)
-        reports.append((gradients, run.total_loss, run.total_targets, run.steps))
-    assert reports[0][1:] == pytest.approx(reports[1][1:])
-    for a, b in zip(reports[0][0], reports[1][0], strict=True):
-        torch.testing.assert_close(a, b)
-    for a, b in zip(models[0].parameters(), models[1].parameters(), strict=True):
+        assert run.total_targets == 1  # The lookahead target is not scored twice.
+        losses.append(run.total_loss)
+    assert losses[0] == pytest.approx(losses[1])
+    for a, b in zip(models[0].parameters(), models[1].parameters()):
         torch.testing.assert_close(a, b)
 
 
@@ -275,6 +283,7 @@ def test_generic_checkpoint_records_effective_chunk(tiny_model: TitansModel, tmp
     assert json.loads((path / "titans.json").read_text())["config"]["chunk_size"] == 7
     restored = TitansModel.load_pretrained(path)
     assert restored.config.chunk_size == restored.memories["0"].config.chunk_size == 7
+    assert restored.config.memory_variant == restored.memories["0"].config.memory_variant == "paper"
     with torch.no_grad():
         ids = list(range(12))
         torch.testing.assert_close(model._forward_tokens(ids, model.start_stream()),

@@ -518,6 +518,7 @@ class ContinualModel(nn.Module):
         else:
             normalized = self.backbone.model.norm(hidden)
         state._boundary_prediction = False
+        state._next_target_scored = False
         state._next_hidden = normalized[:, -1:].contiguous()
         logits = normalized if return_hidden else self.backbone.lm_head(normalized)
         state._position += embeddings.shape[1]
@@ -691,8 +692,10 @@ class ContinualModel(nn.Module):
             FileExistsError: The requested checkpoint directory already exists.
 
         Existing streams become incompatible when fit starts. Training uses
-        truncated backpropagation through memory writes; each episode resets
-        state and each training question runs on a disposable branch.
+        truncated backpropagation through memory writes. The keyword-only
+        config.episode_memory selects fresh state ("reset", default) or sequential
+        continuity ("carry") between episodes within this call. Each standard
+        training question runs on a disposable branch.
         """
         from titans.training.trainer import fit_model
 
@@ -786,6 +789,9 @@ class ContinualModel(nn.Module):
             chunks = {options["chunk_size"] for options in memory_configs.values()}
             if len(memory_configs) == len(self.memories) and len(chunks) == 1:
                 settings["chunk_size"] = chunks.pop()
+            variants = {options["memory_variant"] for options in memory_configs.values()}
+            if len(memory_configs) == len(self.memories) and len(variants) == 1:
+                settings["memory_variant"] = variants.pop()
             (temporary / "titans.json").write_text(json.dumps({
                 "format_version": 4,
                 "mac_retrieval_policy": "shared_causal",
@@ -828,6 +834,9 @@ class ContinualModel(nn.Module):
         if metadata["format_version"] not in (1, 2, 3, 4):
             raise ValueError("Unsupported Titans checkpoint format")
         settings = metadata["config"]
+        settings.setdefault("memory_variant", "legacy")
+        if settings["memory_variant"] == "legacy":
+            settings.setdefault("memory_hidden_dim", 256)
         settings.pop("attention_backend", None)
         settings.pop("inference_backend", None)  # Restore old checkpoints onto the local runtime.
         settings.pop("cuda_graphs", None)
@@ -861,6 +870,9 @@ class ContinualModel(nn.Module):
             def restore_memory(hidden_size: int) -> NeuralMemory:
                 """Restore the next configured memory layer at the decoder's hidden width."""
                 options = dict(next(layer_settings))
+                options.setdefault("memory_variant", "legacy")
+                if options["memory_variant"] == "legacy":
+                    options.setdefault("memory_hidden_dim", 256)
                 options.pop("attention_backend", None)
                 options.pop("inference_backend", None)
                 options.pop("cuda_graphs", None)
