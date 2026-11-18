@@ -252,9 +252,14 @@ def test_explicit_fa3_rejects_unsupported(tiny_model: TitansModel) -> None:
     tiny_model.config = replace(tiny_model.config, attention_backend="fa3")
     with torch.no_grad(), pytest.raises(RuntimeError, match="CUDA.*sdpa"):
         tiny_model._forward_tokens([7], tiny_model._new_state())
-    tiny_model.config = replace(tiny_model.config, attention_backend="auto")
+    assert RuntimeConfig().attention_backend == TitansConfig().attention_backend == "auto"
     with torch.no_grad():
-        assert tiny_model._forward_tokens([7], tiny_model._new_state()).isfinite().all()
+        tiny_model.config = replace(tiny_model.config, attention_backend=RuntimeConfig().attention_backend)
+        automatic = tiny_model._forward_tokens([7, 8, 9], tiny_model._new_state())
+        tiny_model.config = replace(tiny_model.config, attention_backend="sdpa")
+        reference = tiny_model._forward_tokens([7, 8, 9], tiny_model._new_state())
+    torch.testing.assert_close(automatic, reference, rtol=0, atol=0)
+
 
 def test_generic_checkpoint_records_effective_chunk(tiny_model: TitansModel, tmp_path: Path) -> None:
     """Restore a nondefault write chunk supplied by an architecture factory.

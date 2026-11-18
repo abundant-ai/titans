@@ -53,7 +53,7 @@ class RuntimeConfig:
     compile_kernels: bool = True
     prefill_chunk_size: int = 256
     inference_backend: Literal["auto", "torch", "sglang"] = "torch"
-    attention_backend: Literal["auto", "sdpa", "fa3"] = "sdpa"
+    attention_backend: Literal["auto", "sdpa", "fa3"] = "auto"
     use_liger: bool = False
     cuda_graphs: bool = True
     mac_segment_length: int = field(default=512, kw_only=True)

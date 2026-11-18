@@ -53,7 +53,6 @@ class TitansConfig(RuntimeConfig):
     max_inner_learning_rate: float = 0.01
     gate_bias: float = -4.0
     inference_backend: Literal["auto", "torch", "sglang"] = "auto"
-    attention_backend: Literal["auto", "sdpa", "fa3"] = "auto"
     use_liger: bool = True
 
     def __post_init__(self) -> None:

@@ -407,12 +407,19 @@ class ContinualModel(nn.Module):
             if use_fa3:
                 from titans.optim.gpu_ops import flash_attention3
 
-                output = flash_attention3(
-                    query, key, value, prefix_count=prefix_count,
-                    window=window, scale=attention.scaling,
-                    prefix_only=prefix_only,
-                )
-            else:
+                try:
+                    output = flash_attention3(
+                        query, key, value, prefix_count=prefix_count,
+                        window=window, scale=attention.scaling, prefix_only=prefix_only,
+                    )
+                except NotImplementedError as error:
+                    if backend == "fa3":
+                        raise RuntimeError(
+                            "The FA3 kernel does not support this attention operation. "
+                            "Use attention_backend='auto' or 'sdpa'."
+                        ) from error
+                    use_fa3 = False
+            if not use_fa3:
                 output = F.scaled_dot_product_attention(
                     query, key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1),
                     attn_mask=mask()[None, None], dropout_p=0.0, scale=attention.scaling,
