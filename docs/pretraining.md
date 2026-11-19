@@ -31,7 +31,108 @@ exact reproduction of the paper's 340M parameter budget. The Llama 2 tokenizer
 is loaded from the public `NousResearch/Llama-2-7b-hf` mirror; its model weights
 are never downloaded. Initialization uses an isolated seed.
 
-## Joint training
+## Continuous scratch pretraining
+
+`pretrain` uses one continuing instance, FP32, and one AdamW step per 4,096
+input tokens. Documents contribute to the same active memory throughout the call.
+
+```python
+from titans import TitansConfig, TitansModel, pretraining_batches
+
+model = TitansModel.from_scratch(
+    TitansConfig(compile_kernels=False, use_liger=True), device="cuda", seed=17,
+)
+documents = ["Alice lives in Paris.", "Alice works at a hospital."]
+batches = pretraining_batches(documents, model.tokenizer)
+result = model.pretrain(batches, output_dir="checkpoints/pretraining")
+```
+
+Supply a lazy iterable of document texts for a corpus. The packer appends the
+tokenizer's EOS separator after each document, then yields consecutive int64
+`(input_ids, labels)` pairs shaped `[1, 4096]`. A shorter final batch has no
+padding. Each pair is shifted by one token. The last prediction in a batch scores
+the first input token of the next batch before that token enters memory. The
+terminal EOS is scored as a target and is not forwarded. Custom loaders must
+preserve this ordering and alignment.
+
+The forward pass updates active memory W through the selected algorithm and
+retains the complete block's gradient graph. The outer loss is summed next-token
+cross-entropy divided by the number of targets. One backward pass, gradient-norm
+clipping at 1.0, and one AdamW step update theta and phi. The default learning
+rate is `1e-4`, with PyTorch AdamW's other defaults. The checkpointed feed-forward
+path reduces activation storage while retaining gradients across the full block.
+
+After each step, active memory and its update buffers retain their values and drop
+their gradient history. This includes pending writes, convolution history, momentum
+and retrieval snapshots. Document separators continue the same instance memory.
+Before the next batch, ordinary decoder KV is cleared and persistent-prefix
+representations are recomputed using the current parameters. Within a batch,
+ordinary attention uses its configured sliding window. MAC manages its own
+segment-specific KV and clears it at each 512-token boundary. Its memory commits
+every 16 tokens. The trainer delegates these boundaries to the connection and
+memory implementations, including retention of an unfinished custom segment.
+
+Memory values carried between batches were produced under earlier parameter
+versions. Later losses can read those values, while direct gradient credit reaches
+only through the current block. Recomputing the persistent prefix lets every batch
+train its learned embeddings. A new `pretrain` call starts fresh instance memory
+and a fresh optimizer. `result.final_state` exposes the detached continuing instance
+memory and cached context for inference. The saved checkpoint contains model
+parameters. Restarting the optimizer and live stream from disk requires separate
+application support.
+
+The model's floating-point parameters and buffers are converted to FP32. Autocast
+and TF32 are disabled during pretraining, with the caller's execution settings
+restored afterward. Custom memory implementations must also produce FP32 buffers.
+Native PyTorch attention, compiled kernels and Liger remain available. The model's
+prior training mode and parameter gradient flags are restored on exit.
+
+| Removed from this path | Fixed behavior |
+| --- | --- |
+| `prefill_chunk_size` | Connection-owned internal block boundaries |
+| Separate `sequence_length` truncation | Detach after each 4,096-token optimizer step |
+| `tokens_per_step` and accumulation | One optimizer step per batch |
+| Configurable batch size | Exactly one instance |
+| BF16/autocast and precision selection | FP32 |
+| Document resets and `episode_memory` | Continuous memory throughout the call |
+
+Legacy settings are supported by `fit` and checkpoint loaders. `pretrain` accepts
+scratch-backbone models with custom memory and connection factories. It rejects
+pretrained-Qwen starts, discontinuous batches and nonfinal short batches. An invalid
+later batch can follow already completed optimizer steps; failure invalidates the
+continuing instance and produces no successful checkpoint.
+
+Run the manual H100 check with an available Modal environment selected locally.
+
+```sh
+python -m modal run --env testing -m checks.modal_pretraining --packed \
+    --output validation/h100_stream_pretraining.json
+```
+
+This performs fixed-input forward/backward comparisons and measures a full
+`[1, 4096]` block. It performs zero optimizer steps and runs outside CI.
+
+The earlier [H100 report](../validation/h100_stream_pretraining.json), recorded
+before restricting Liger to SwiGLU and fused cross-entropy, records a passing
+4,096-token boundary check: ordinary KV resets, active memory continues, and the
+recomputed prefix receives gradients in the next block. The 33-token FP32 gradient
+comparisons pass, while eager/optimized raw-gradient parity fails at 4,096 tokens. The original runtime reproduced the long-block discrepancy with
+the same initialization and inputs. Both full-block paths produced finite but
+large gradients. The current [real-text clipping report](../validation/h100_liger_clipping.json)
+compares native execution, selective Liger and the compiled path. It measures raw
+gradients and gradients after calling the same global norm-1 clipping operation
+used by `pretrain`. Selective Liger with compilation disabled passed these checks
+on the recorded batch. The compiled path still failed gradient parity; the example
+above therefore disables compilation. Historical failures remain in their original
+reports.
+
+```sh
+python -m modal run --env testing -m checks.modal_liger_clipping \
+    --source validation/h100_liger_real_text.json \
+    --output validation/h100_liger_clipping.json
+```
+
+## Episode-based joint training
 
 ```python
 from pathlib import Path

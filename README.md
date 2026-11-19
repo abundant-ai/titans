@@ -66,15 +66,24 @@ the previous built-in connection paths as well as the current ones.
 ## Start from scratch
 
 ```python
-from titans import TitansModel
+from titans import TitansConfig, TitansModel, pretraining_batches
 
-model = TitansModel.from_scratch(device="cuda", seed=17)
+model = TitansModel.from_scratch(
+    TitansConfig(compile_kernels=False, use_liger=True), device="cuda", seed=17,
+)
+documents = ["Alice lives in Paris.", "Alice works at a hospital."]
+result = model.pretrain(
+    pretraining_batches(documents, model.tokenizer),
+    output_dir="checkpoints/pretraining",
+)
 ```
 
 The decoder has 24 blocks, hidden width 1,024 and 16 attention heads. Its remaining
-architecture settings are also fixed. `fit` defaults to joint backbone/memory
-training for this model. See [pretraining](docs/pretraining.md) for the exact
-configuration, training example and manual H100 check.
+architecture settings are also fixed. `pretrain` jointly trains the backbone and
+memory in FP32 with batch size 1 and one optimizer step per 4,096 input tokens.
+Instance memory continues across documents and batches. Ordinary decoder KV resets
+between batches, and the persistent prefix is recomputed for training. See
+[pretraining](docs/pretraining.md) for packing, gradient boundaries and the manual H100 check.
 
 ## Instantiate a method
 

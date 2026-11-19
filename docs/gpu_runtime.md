@@ -35,15 +35,26 @@ rotary frequencies used by the backbone so a BF16 checkpoint round trip preserve
 
 `compile_kernels=True` compiles tensor operations with PyTorch Inductor, including the
 memory projections, retrieval, write update and output gate. On CPU it also compiles
-the backbone attention, RMSNorm and MLP paths. On CUDA, PyTorch dispatches SDPA
+the backbone attention and MLP paths. On CUDA, PyTorch dispatches SDPA
 directly. The CUDA training loop excludes cuDNN SDPA because its backward pass
 produced nonfinite gradients on pretrained Qwen with the prefix and sliding-window mask.
 
-`use_liger=True` enables CUDA RMSNorm, rotary embeddings, SwiGLU and fused linear
-cross-entropy. The fused loss avoids allocating a dense vocabulary projection for
-every supervised token. Set `use_liger=False` to run those operations in PyTorch.
+`use_liger=True` enables CUDA SwiGLU and fused linear cross-entropy. Decoder RMSNorm
+and rotary embeddings use the native PyTorch implementations, including when
+compilation is enabled. The fused loss avoids allocating a dense vocabulary
+projection for every supervised token. Set `use_liger=False` to use the native
+loss and the existing native or compiled MLP path.
 Set `compile_kernels=False` to run the tensor operations eagerly.
-On supported CUDA devices, standard training uses BF16 autocast and FP32 for
+The fixed `pretrain` path uses FP32 and clips the joint parameter gradients to
+global norm 1.0 immediately before each AdamW step. The ad hoc
+[real-text clipping check](../checks/modal_liger_clipping.py) applies the actual
+clipping operation without taking optimizer steps. With `compile_kernels=False`,
+selective Liger passed raw and clipped gradient comparisons across all 232
+parameter tensors on the recorded real-text batch. The existing compiled path
+still failed gradient parity. Use `compile_kernels=False` for this validated
+FP32 setup; see the [H100 report](../validation/h100_liger_clipping.json).
+
+On supported CUDA devices, legacy `fit` training uses BF16 autocast and FP32 for
 the memory-update arithmetic. Activation checkpointing can recompute the host MLP
 during backward. See [PyTorch compilation](https://docs.pytorch.org/docs/2.9/generated/torch.compile.html).
 

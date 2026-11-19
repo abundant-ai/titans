@@ -3,6 +3,7 @@
 from titans.core.protocols import (
     BackboneConnection,
     ConnectionContext,
+    ConnectionExecution,
     ConnectionFactory,
     ConnectionPlan,
     DataGenerator,
@@ -43,10 +44,12 @@ from titans.runtime.connections import ResidualConnection, residual_connection
 from titans.runtime.model import ContinualModel
 from titans.runtime.state import StreamState
 from titans.training.learning import GradientUpdate, cross_entropy
+from titans.training.pretraining import pretraining_batches
 
 __all__ = [
+    "pretraining_batches",
     "TitansMACConnection", "titans_mac_connection",
-    "BackboneConnection", "ConnectionContext", "ConnectionFactory", "ConnectionPlan",
+    "BackboneConnection", "ConnectionContext", "ConnectionExecution", "ConnectionFactory", "ConnectionPlan",
     "MemoryArchitecture", "TitansArchitecture", "TitansMAGConnection", "ResidualConnection",
     "residual_connection", "titans_mag_connection",
     "GradientUpdate", "cross_entropy", "DataGenerator", "LossContext", "LossValue",

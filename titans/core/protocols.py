@@ -120,10 +120,82 @@ class ConnectionPlan:
     memory_output: Tensor
 
 
+@dataclass(frozen=True)
+class ConnectionExecution:
+    """Connection-owned attention layout for the next causal block.
+
+    block_size bounds real tokens. extra_tokens bounds virtual attention inputs.
+    position_start overrides ordinary rotary positions when supplied. token_start
+    and token_stride select real-token attention outputs; None skips the actual
+    number of prepended inputs. reset_cache retains only persistent-prefix KV.
+    snapshot_memory requests a differentiable read cursor that survives until
+    reset_cache, independently of the live memory receiving writes.
+    retain_training_cache preserves method-owned attention context when ordinary
+    decoder KV is cleared between packed pretraining blocks.
+    """
+
+    block_size: int
+    extra_tokens: int = 0
+    position_start: int | None = None
+    attention_window: int | None = None
+    token_start: int | None = None
+    token_stride: int = 1
+    reset_cache: bool = False
+    snapshot_memory: bool = False
+    retain_training_cache: bool = False
+
+
 class BackboneConnection(nn.Module, ABC):
     """Registered connection parameters; mutable temporal state belongs to MemoryState."""
 
     max_context_tokens: int = 0
+
+    def execution(self, position: int, tokens: int, *, prefix_tokens: int,
+                  segment_length: int, attention_window: int) -> ConnectionExecution:
+        """Declare the next block's bounds and attention layout.
+
+        The default preserves ordinary residual connections and legacy connections
+        that prepend bounded context for each individual real token.
+
+        Args:
+            position: Absolute input position including the persistent prefix.
+            tokens: Number of available real tokens.
+            prefix_tokens: Persistent-prefix length.
+            segment_length: Runtime segment setting available to segmented methods.
+            attention_window: Ordinary decoder attention span.
+
+        Returns:
+            Execution requirements for this connection's next block.
+
+        Raises:
+            ValueError: The declared prepended context exceeds the attention span.
+        """
+        if not 0 <= self.max_context_tokens < attention_window:
+            raise ValueError("Connection context must fit inside attention_window")
+        if self.max_context_tokens:
+            return ConnectionExecution(
+                block_size=1, extra_tokens=self.max_context_tokens,
+                position_start=prefix_tokens, reset_cache=True,
+            )
+        return ConnectionExecution(block_size=tokens)
+
+    def prepare_block(self, context: ConnectionContext, memory: MemoryModule,
+                      state: MemoryState, *, retrieval: MemoryState | None,
+                      write: bool) -> ConnectionPlan:
+        """Prepare attention using the connection's declared execution policy.
+
+        Args:
+            context: Current real-token representations.
+            memory: Registered memory implementation.
+            state: Live instance memory receiving writes.
+            retrieval: Optional persistent read cursor requested by execution.
+            write: Whether active-memory writes are enabled.
+
+        Returns:
+            Attention inputs and memory contribution. Existing implementations
+            inherit dispatch to prepare with the live instance memory.
+        """
+        return self.prepare(context, memory, state, write=write)
 
     @abstractmethod
     def prepare(self, context: ConnectionContext, memory: MemoryModule,

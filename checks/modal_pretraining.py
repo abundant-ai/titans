@@ -20,8 +20,11 @@ cache = modal.Volume.from_name("titans-verification-cache", create_if_missing=Tr
 
 @app.function(image=image, gpu="H100!", cpu=4, memory=16384, timeout=1800, startup_timeout=300,
               max_containers=1, volumes={"/cache": cache})
-def verify() -> dict[str, object]:
+def verify(packed: bool = False) -> dict[str, object]:
     """Run bounded full-size inference and gradient comparisons on one H100.
+
+    Args:
+        packed: Run the single-stream FP32 4096-token check when enabled.
 
     Returns:
         Device/software/source provenance and pass/failure details, including failures.
@@ -51,8 +54,15 @@ def verify() -> dict[str, object]:
         },
     }
     try:
-        report["results"] = run_pretraining_checks()
-        report["passed"] = True
+        if packed:
+            from checks.stream_pretraining import run_stream_pretraining_checks
+
+            results = run_stream_pretraining_checks()
+            report["passed"] = results["full_gradient_parity_passed"]
+        else:
+            results = run_pretraining_checks()
+            report["passed"] = True
+        report["results"] = results
     except Exception:
         report["passed"] = False
         report["error"] = traceback.format_exc()
@@ -62,18 +72,19 @@ def verify() -> dict[str, object]:
 
 
 @app.local_entrypoint()
-def main(output: str = "validation/h100_pretraining.json") -> None:
+def main(output: str = "validation/h100_pretraining.json", packed: bool = False) -> None:
     """Launch the manual H100 comparison and persist its evidence.
 
     Args:
         output: Local JSON report destination, including on test failure.
+        packed: Select the continuous FP32 pretraining check.
 
     Raises:
         RuntimeError: Validation did not complete successfully.
     """
     import time
 
-    call = verify.spawn()
+    call = verify.spawn(packed)
     started = time.monotonic()
     while True:
         try:

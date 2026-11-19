@@ -26,6 +26,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
 from titans.core.protocols import (
     ConnectionContext,
+    ConnectionExecution,
     ConnectionFactory,
     DataGenerator,
     MemoryArchitecture,
@@ -127,15 +128,7 @@ class ContinualModel(nn.Module):
         }).to(device=parameter.device, dtype=parameter.dtype)
         if len({id(module) for module in self.connections.values()}) != len(config.memory_layers):
             raise ValueError("connection_factory must create independent modules per layer")
-        from titans.methods.titans import TitansMACConnection
-
-        self._mac_layers = {int(i) for i, c in self.connections.items()
-                            if type(c) is TitansMACConnection}
-        custom = [c for i, c in self.connections.items() if int(i) not in self._mac_layers]
-        if any(c.max_context_tokens < 0 or c.max_context_tokens + 1 > config.attention_window
-               for c in custom):
-            raise ValueError("Connection context must fit inside attention_window")
-        self._custom_context = any(c.max_context_tokens for c in custom)
+        self._connection_executions(config.persistent_tokens, 1)
         self.memories = nn.ModuleDict({
             str(index): architecture(backbone.config.hidden_size)
             for index in config.memory_layers
@@ -267,7 +260,7 @@ class ContinualModel(nn.Module):
         """
         state = StreamState(self._owner, self._revision)
         for key, memory in self.memories.items():
-            state._memory[int(key)] = memory.initial_state()
+            state._memory[int(key)] = memory.initial_state(batch_size=1)
         if self.config.persistent_tokens:
             self._forward_embeddings(self.persistent, state, write=False, last_only=True,
                                      return_hidden=prefix_hidden_only)
@@ -310,8 +303,8 @@ class ContinualModel(nn.Module):
         )
 
         # Compiling the complete CUDA SDPA wrapper produced nonfinite Qwen
-        # gradients in PyTorch 2.9.1. Native fused attention and Liger RoPE retain
-        # their autograd rules; CPU attention and the memory core still use JIT.
+        # gradients in PyTorch 2.9.1. Native SDPA and RoPE retain their autograd rules; CPU attention
+        # and the memory core still use JIT.
         if self.config.compile_kernels and hidden.device.type != "cuda":
             from titans.optim.kernels import compiled_attention
 
@@ -332,12 +325,7 @@ class ContinualModel(nn.Module):
             key = attention.k_proj(hidden).view(shape).transpose(1, 2)
             value = attention.v_proj(hidden).view(shape).transpose(1, 2)
             rotary = tuple(part.to(query.dtype) for part in rotary)
-            if hidden.device.type == "cuda" and self.config.use_liger:
-                from titans.optim.gpu_ops import liger_rotary
-
-                query, key = liger_rotary(query, key, *rotary)
-            else:
-                query, key = apply_rotary_pos_emb(query, key, *rotary)
+            query, key = apply_rotary_pos_emb(query, key, *rotary)
             if cache is not None:
                 key = torch.cat((cache.keys, key), -2)
                 value = torch.cat((cache.values, value), -2)
@@ -356,6 +344,35 @@ class ContinualModel(nn.Module):
         kept_positions = torch.cat((key_positions[:prefix_count], key_positions[tail_start:]))
         return output, AttentionState(kept_keys, kept_values, kept_positions)
 
+    def _connection_executions(self, position: int, tokens: int) -> dict[int, ConnectionExecution]:
+        """Collect and validate connection-owned causal execution requirements.
+
+        Args:
+            position: Absolute stream position including the persistent prefix.
+            tokens: Available real-token count.
+
+        Returns:
+            One execution declaration per configured memory connection.
+
+        Raises:
+            ValueError: A connection requests an invalid block or attention layout.
+        """
+        executions = {
+            int(index): connection.execution(
+                position, tokens, prefix_tokens=self.config.persistent_tokens,
+                segment_length=self.config.mac_segment_length,
+                attention_window=self.config.attention_window,
+            ) for index, connection in self.connections.items()
+        }
+        for execution in executions.values():
+            if (not 1 <= execution.block_size <= tokens or execution.extra_tokens < 0
+                    or execution.token_stride < 1
+                    or (execution.token_start is not None and execution.token_start < 0)
+                    or (execution.position_start is not None and execution.position_start < 0)
+                    or (execution.attention_window is not None and execution.attention_window < 1)):
+                raise ValueError("Invalid connection execution declaration")
+        return executions
+
     def _forward_embeddings(
         self, embeddings: Tensor, state: StreamState, *, write: bool = True,
         last_only: bool = False, return_hidden: bool = False,
@@ -373,14 +390,9 @@ class ContinualModel(nn.Module):
             Logits [1, tokens, vocabulary] for next-token prediction.
         """
         prefix_pass = state._position == 0 and embeddings.shape[1] == self.config.persistent_tokens
-        segment = self.config.mac_segment_length
-        offset = (state._position - self.config.persistent_tokens) % segment
-        block_limit = embeddings.shape[1]
-        if not prefix_pass:
-            if self._custom_context:
-                block_limit = 1
-            elif self._mac_layers:
-                block_limit = segment - offset
+        executions = {} if prefix_pass else self._connection_executions(
+            state._position, embeddings.shape[1])
+        block_limit = min((e.block_size for e in executions.values()), default=embeddings.shape[1])
         if embeddings.shape[1] > block_limit:
             outputs = []
             start = 0
@@ -394,46 +406,39 @@ class ContinualModel(nn.Module):
                 if not last_only or final_block:
                     outputs.append(output)
                 start = end
-                block_limit = 1 if self._custom_context else segment
+                if start < embeddings.shape[1]:
+                    executions = self._connection_executions(state._position, embeddings.shape[1] - start)
+                    block_limit = min((e.block_size for e in executions.values()),
+                                      default=embeddings.shape[1] - start)
             return outputs[-1] if last_only else torch.cat(outputs, dim=1)
         positions = torch.arange(state._position, state._position + embeddings.shape[1],
                                  device=embeddings.device)
         rotary = self.backbone.model.rotary_emb(embeddings, positions[None, :])
         hidden = embeddings
+        # Keep normalization and rotary arithmetic native across optimization modes.
         use_liger = self.config.use_liger and hidden.device.type == "cuda"
         for index, layer in enumerate(self.backbone.model.layers):
-            if use_liger:
-                from titans.optim.gpu_ops import liger_norm
-
-                normalized = liger_norm(hidden, layer.input_layernorm.weight,
-                                        layer.input_layernorm.variance_epsilon)
-            elif self.config.compile_kernels:
-                from titans.optim.kernels import compiled_rms_norm
-
-                normalized = compiled_rms_norm(hidden, layer.input_layernorm.weight,
-                                               layer.input_layernorm.variance_epsilon)
-            else:
-                normalized = layer.input_layernorm(hidden)
+            normalized = layer.input_layernorm(hidden)
             context = ConnectionContext(index, hidden, normalized)
             connection = self.connections[str(index)] if str(index) in self.memories else None
             if prefix_pass and connection is not None and connection.max_context_tokens:
                 connection = None
             plan = None
+            execution = executions.get(index, ConnectionExecution(embeddings.shape[1]))
             if connection is not None:
-                if index in self._mac_layers:
+                if execution.snapshot_memory:
                     if index not in state._retrieval:
                         state._retrieval[index] = state._memory[index].copy()
-                    plan = connection._prepare_segment(context, self.memories[str(index)],
-                                                       state._retrieval[index])
-                else:
-                    plan = connection.prepare(context, self.memories[str(index)],
-                                              state._memory[index], write=write)
+                plan = connection.prepare_block(
+                    context, self.memories[str(index)], state._memory[index],
+                    retrieval=state._retrieval.get(index), write=write,
+                )
                 if (plan.memory_output.shape != hidden.shape
                         or plan.memory_output.device != hidden.device
                         or plan.memory_output.dtype != hidden.dtype):
                     raise ValueError("Memory read must preserve shape, device and dtype")
                 extra = plan.attention_input.shape[1] - hidden.shape[1]
-                limit = hidden.shape[1] if index in self._mac_layers else connection.max_context_tokens
+                limit = execution.extra_tokens
                 if (not 0 <= extra <= limit
                         or plan.attention_input.shape[0] != hidden.shape[0]
                         or plan.attention_input.shape[2:] != hidden.shape[2:]
@@ -445,11 +450,9 @@ class ContinualModel(nn.Module):
             local_positions, local_rotary = positions, rotary
             old_cache = state._attention.get(index)
             next_position = state._position + embeddings.shape[1]
-            if connection is not None and connection.max_context_tokens:
-                # Paired MAC positions resume from the current segment offset.
-                prefix = self.config.persistent_tokens
+            if connection is not None and execution.position_start is not None:
                 count = embeddings.shape[1] + extra
-                first = prefix + (2 * offset if index in self._mac_layers else 0)
+                first = execution.position_start
                 local_positions = torch.arange(first, first + count, device=hidden.device)
                 local_rotary = self.backbone.model.rotary_emb(plan.attention_input,
                                                               local_positions[None, :])
@@ -457,16 +460,18 @@ class ContinualModel(nn.Module):
             attended, cache = self._local_attention(
                 layer, plan.attention_input if plan is not None else normalized,
                 local_positions, local_rotary, old_cache, next_position,
-                window=2 * segment if index in self._mac_layers and not prefix_pass else None,
+                window=execution.attention_window,
             )
-            if connection is not None and connection.max_context_tokens:
-                mac = index in self._mac_layers
-                if not mac or offset + embeddings.shape[1] == segment:
+            if connection is not None:
+                if execution.reset_cache:
                     n = self.config.persistent_tokens
                     cache = AttentionState(cache.keys[:, :, :n].clone(), cache.values[:, :, :n].clone(),
                                            cache.positions[:n].clone())
                     state._retrieval.pop(index, None)
-                attended = attended[:, 1::2] if mac else attended[:, extra:]
+                first_token = extra if execution.token_start is None else execution.token_start
+                attended = attended[:, first_token::execution.token_stride]
+                if attended.shape != hidden.shape:
+                    raise ValueError("Connection layout must select one output per real token")
             state._attention[index] = cache
             if connection is not None and plan is not None:
                 hidden = connection.finish(context, attended, plan, self.memories[str(index)],
@@ -476,14 +481,7 @@ class ContinualModel(nn.Module):
                     raise ValueError("Connection output must preserve shape, device and dtype")
             else:
                 hidden = hidden + attended
-            if use_liger:
-                normalized = liger_norm(hidden, layer.post_attention_layernorm.weight,
-                                        layer.post_attention_layernorm.variance_epsilon)
-            elif self.config.compile_kernels:
-                normalized = compiled_rms_norm(hidden, layer.post_attention_layernorm.weight,
-                                               layer.post_attention_layernorm.variance_epsilon)
-            else:
-                normalized = layer.post_attention_layernorm(hidden)
+            normalized = layer.post_attention_layernorm(hidden)
             if (use_liger or self.config.compile_kernels) and self.backbone.config.hidden_act == "silu":
                 if use_liger:
                     from titans.optim.gpu_ops import liger_mlp
@@ -509,14 +507,7 @@ class ContinualModel(nn.Module):
             hidden = hidden + feedforward
         if last_only:
             hidden = hidden[:, -1:]
-        if use_liger:
-            normalized = liger_norm(hidden, self.backbone.model.norm.weight,
-                                    self.backbone.model.norm.variance_epsilon)
-        elif self.config.compile_kernels:
-            normalized = compiled_rms_norm(hidden, self.backbone.model.norm.weight,
-                                           self.backbone.model.norm.variance_epsilon)
-        else:
-            normalized = self.backbone.model.norm(hidden)
+        normalized = self.backbone.model.norm(hidden)
         state._boundary_prediction = False
         state._next_target_scored = False
         state._next_hidden = normalized[:, -1:].contiguous()
@@ -670,6 +661,29 @@ class ContinualModel(nn.Module):
         text = self.tokenizer.decode(generated, skip_special_tokens=True).strip()
         return Answer(question.question_id, text, text.casefold() == "[unknown]",
                       len(generated), stopped_by_limit)
+
+    def pretrain(self, batches: Iterable[tuple[Tensor, Tensor]], *,
+                 output_dir: str | Path, learning_rate: float = 1e-4) -> TrainingResult:
+        """Jointly train the scratch model on one continuing FP32 token stream.
+
+        Args:
+            batches: Consecutive int64 inputs and next-token labels [1, 4096].
+                The final block may be shorter. Document separators are ordinary inputs.
+            output_dir: New checkpoint directory for the learned parameters.
+            learning_rate: Positive finite AdamW learning rate.
+
+        Returns:
+            Checkpoint, mean token loss, optimizer-step count and final instance memory.
+
+        Raises:
+            ValueError: The model is pretrained Qwen or the batches violate the contract.
+            FileExistsError: The checkpoint destination already exists.
+            FloatingPointError: A loss becomes nonfinite.
+            RuntimeError: Gradient clipping detects a nonfinite norm.
+        """
+        from titans.training.pretraining import pretrain_model
+
+        return pretrain_model(self, batches, output_dir=output_dir, learning_rate=learning_rate)
 
     def fit(
         self, episodes: Iterable[TrainingEpisode] | DataGenerator, config: TrainingConfig,

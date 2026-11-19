@@ -28,6 +28,12 @@ architectures and connections are implemented in `titans/methods/titans.py`.
 
 ## Connection protocol
 
+- `execution(position, tokens, prefix_tokens=..., segment_length=...,
+  attention_window=...) -> ConnectionExecution` declares the next block's size,
+  virtual-token allowance, rotary origin, attention window, real-token output
+  selection, cache lifetime and optional memory snapshot.
+- `prepare_block(context, memory, state, retrieval=..., write=...)` prepares that
+  block. Its default calls `prepare`, preserving existing connection implementations.
 - `prepare(context, memory, state, write=...) -> ConnectionPlan` chooses what
   memory reads/writes, what attention receives, and any retrieved context tokens.
 - `finish(context, attention, plan, memory, state, write=...) -> Tensor` can write
@@ -39,6 +45,23 @@ architectures and connections are implemented in `titans/methods/titans.py`.
 contains attention input and a memory read. Connection parameters are registered
 PyTorch parameters: they join phi, receive gradients, and are saved with the model.
 Mutable temporal buffers belong in the stream's `MemoryState`, not in a connection.
+
+The runtime takes the smallest declared block size across selected connections
+and reevaluates the declarations after advancing. A requested memory snapshot is
+copied with its graph intact, passed as `retrieval`, and carried until `reset_cache`.
+That reset retains persistent-prefix KV and releases the snapshot. `token_start`
+and `token_stride` select real-token attention outputs; an omitted start skips the
+actual prepended context. The default execution hook gives residual connections
+ordinary sliding attention and processes legacy prepended-context connections
+one real token at a time. Titans MAC declares its paired attention layout through
+the same hook. Shared execution dispatches through these methods.
+
+Packed pretraining clears ordinary decoder KV between 4,096-token batches and
+recomputes the persistent prefix. A connection can set `retain_training_cache`
+in its execution declaration to keep its own attention history across that
+boundary. MAC uses this to preserve unfinished segments for custom segment sizes.
+The default 512-token MAC segment ends exactly at each full training boundary.
+Active memory and retrieval cursors continue independently of ordinary KV resets.
 
 ## Choosing decoder layers
 
@@ -115,10 +138,11 @@ segment cache, retrieval cursor and live memory, including pending writes.
 weights. The next document continues from the source state.
 
 `mac_segment_length` counts real tokens, `chunk_size` counts writes, and
-`prefill_chunk_size` bounds execution blocks. Only the first two change the
-model's predictions. Host blocks of 256 and training detaches at 2,048 tokens
-preserve the segment offset. Custom connections retain their declared context
-bound and execution order.
+`prefill_chunk_size` bounds legacy streaming execution blocks. Only the first two
+change the model's predictions. Packed scratch `pretrain` sends full 4,096-token
+blocks to the runtime and follows the connection's declared boundaries. Legacy
+`fit` uses its configured prefill and gradient windows. All paths preserve the
+segment offset across calls and gradient detachment.
 
 ## Fixed versus overridable
 
@@ -127,7 +151,7 @@ bound and execution order.
 | Backbone | Fixed scratch Llama or Qwen2.5-1.5B-Instruct | Choose scratch/pretrained start and outer training mode |
 | Architecture | Registered modules and independent state ownership | `MemoryArchitecture`, network size/structure and initialization |
 | Transition | Causality and stream continuity | `MemoryModule.transition` and state representation |
-| Connection | Shape/device checks, bounded attention, real-token order | `ConnectionFactory`, `prepare`, `finish`, `combine`, layer placement |
+| Connection | Shape/device checks, bounded attention, real-token order | `ConnectionFactory`, `execution`, `prepare_block`, `prepare`, `finish`, `combine`, layer placement |
 | Data | Ordered episodes and explicit feedback availability | `DataGenerator`, documents, questions, answers, checkpoint timing |
 | Objective | Finite scalar and normalization contract | `Objective` functional form |
 | Updates | State/revision ownership; theta separate from phi and W | `UpdateRule`, phi/W/both/joint, optimizer and rates |
@@ -170,9 +194,10 @@ Its implementation choices and historical checkpoint behavior are described in
 [paper alignment](paper_alignment.md#memory-network-used-by-fresh-models).
 
 Persistent embeddings train with the outer parameters, including when the
-backbone is frozen. Standard training refreshes their prefix representations
-after truncation so later losses can reach them. Runtime inference keeps those
-learned embeddings fixed while fast memory adapts.
+backbone is frozen. Both `fit` and `pretrain` refresh their prefix representations
+after truncation so later losses can reach them. Packed `pretrain` also clears
+ordinary real-token KV before the next batch while preserving active memory.
+Runtime inference keeps learned embeddings fixed while fast memory adapts.
 
 ## Layer-placement experiments
 

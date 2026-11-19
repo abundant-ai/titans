@@ -1,0 +1,573 @@
+{
+  "torch": "2.9.1+cu128",
+  "optimizer_steps": 0,
+  "input_token_ids_sha256": "1d1638688f7ef0128ddef3bd5350101151243247f035e773af5d55ea2b09513c",
+  "source_sha256": {
+    "titans/__init__.py": "fa8b6e595598508de9201c836d368dab9911acf7d2682dbeff54a4a55c233387",
+    "titans/core/__init__.py": "391591b728cb77d64e1f7e2ff204e68292bbf803b13d0b56978d139d8b5ac7a0",
+    "titans/core/protocols.py": "1f9a4a80373b11c09ad01e3d01be585aa53853d39ba2a2ccb4f8d51ad76ee593",
+    "titans/core/types.py": "3de369ba2f3f4800c82281e005347d998d1322b07519ebc88dde8f83cdbec351",
+    "titans/methods/__init__.py": "46b4cb3ecf334dabf23a141324c37811a05f0655e3b0ea99b2fc7c8c35cd7145",
+    "titans/methods/titans.py": "b7a3b50be44db77f4b4ae318de2f98aeef9b07ec3761de4f6ca3055a38e8a275",
+    "titans/optim/__init__.py": "97809859c569007d5f4c89f584935f7f383ad27adbcba3c962876547df61caa0",
+    "titans/optim/gpu_ops.py": "e60491943d775df71be0bbcce8e513093f03197ca60ea733ed66c3a7cb5317f7",
+    "titans/optim/kernels.py": "3081de45c7c600f4525083cee67854a41557b018038275536e54d71cf423c32a",
+    "titans/runtime/__init__.py": "64f71545f1f74236176a709924410fecd79db1aeafb390907b656d5770e15b13",
+    "titans/runtime/backbones.py": "ded9b271367ce29a7948e18a816464b86652274644a46839f6715575ec73b047",
+    "titans/runtime/connections.py": "92fb13cf65e6c1827257cdb0c0def35da3ec13b6555083571dfca3bbf521e20b",
+    "titans/runtime/model.py": "431cf39f913b7011337720ad8e5291b889505a31c475d35d88be5cade4d69021",
+    "titans/runtime/state.py": "f74d35c8e2de8041f81cfb476e58b4fac044a505d038d2c6aa0c3dc947e986d4",
+    "titans/training/__init__.py": "3a35133a4081cdf9292e72e40e35dcc9bb139b26d1ac5555eb7d65644392f72e",
+    "titans/training/learning.py": "adeac785a7b291ac9bb05f9b770d55526e16f06499ee87cd4f14a655cfd2e5cc",
+    "titans/training/pretraining.py": "0bb12e6a93ed0c5aa3983a25bffdb1bd52dce2a385c635e6b0afa08a826de61d",
+    "titans/training/trainer.py": "bdddcbf880b1d30efb8e3af1d1846347d555cd803bd22f4e7a0018c86b6c51d9"
+  },
+  "installed_liger_source_sha256": {
+    "loss": "61ea5e5aa5f7ee029cd7e154af39034f35d874ebe60667efe0a80bfff28dfd42",
+    "norm": "0edbec58de5892d140a1cd0961203055ea197ebc81149957fa2a54ee8a0fd350",
+    "rope": "bfeec91d1aeffb9226a113a4a4a7e5df45b0588e2a4dadad025ef341e0789a5e",
+    "mlp": "0fb9dde2efcb227c2c2113420dd63bee5aa74f3f3e5b9749ae9100b7ccc43bf0"
+  },
+  "ablations": {
+    "native": {
+      "loss": 10.547926902770996,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 1.5242395431198414,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999999999999359
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 36599652730450.914,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.9999999999998943
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 99145812992121.23,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.9999999999999798
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 207107317192384.2,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999999999999922
+        }
+      }
+    },
+    "native_wrappers": {
+      "loss": 10.547926902770996,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 4.609198376079764e-07,
+          "max_absolute": 4.470348358154297e-08,
+          "norm": 1.5242395550134968,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999999999998276
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 4.394968244344678e-05,
+          "max_absolute": 24051712.0,
+          "norm": 36601259037299.94,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.9999999999972129
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 4.331702452402998e-05,
+          "max_absolute": 151257088.0,
+          "norm": 99150094784811.4,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.999999999994345
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 4.1282521524687296e-05,
+          "max_absolute": 638582784.0,
+          "norm": 207115840444599.12,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999999999946885
+        }
+      }
+    },
+    "loss_only": {
+      "loss": 10.547926902770996,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 2.3042552492005404e-07,
+          "max_absolute": 1.862645149230957e-08,
+          "norm": 1.5242395408172227,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999999999998793
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 1.397126417846275e-05,
+          "max_absolute": 6815744.0,
+          "norm": 36599147053550.055,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.9999999999977427
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 1.454084754336984e-05,
+          "max_absolute": 56098816.0,
+          "norm": 99144407885348.14,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.999999999994683
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 1.630380742404037e-05,
+          "max_absolute": 258998272.0,
+          "norm": 207103989619403.3,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999999999961587
+        }
+      }
+    },
+    "norm_only": {
+      "loss": 10.547950744628906,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 0.007140005821510493,
+          "max_absolute": 0.00038456451147794724,
+          "norm": 1.524052164268709,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999745145815343
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 613.5172139196579,
+          "max_absolute": 323445882388480.0,
+          "norm": 2.2417917322376304e+16,
+          "reference_norm": 36599652730450.914,
+          "cosine": -0.999999959163987
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 613.5437081535749,
+          "max_absolute": 2215385004769280.0,
+          "norm": 6.073114394246496e+16,
+          "reference_norm": 99145812992121.23,
+          "cosine": -0.9999999558578699
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 613.5247162243355,
+          "max_absolute": 9482096741449728.0,
+          "norm": 1.2685835069634354e+17,
+          "reference_norm": 207107317192384.2,
+          "cosine": -0.9999999753616842
+        }
+      }
+    },
+    "rope_only": {
+      "loss": 10.547857284545898,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 0.010022471982252442,
+          "max_absolute": 0.0005081929266452789,
+          "norm": 1.5248136560060552,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999498648458932
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 1.0315529814321822,
+          "max_absolute": 543959237632.0,
+          "norm": 1154828185699.7227,
+          "reference_norm": 36599652730450.914,
+          "cosine": -0.9999999797502838
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 1.0315534442991394,
+          "max_absolute": 3724999827456.0,
+          "norm": 3128391973008.7954,
+          "reference_norm": 99145812992121.23,
+          "cosine": -0.9999999718838253
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 1.0315527483464728,
+          "max_absolute": 15942817775616.0,
+          "norm": 6534805248286.081,
+          "reference_norm": 207107317192384.2,
+          "cosine": -0.9999999702915161
+        }
+      }
+    },
+    "mlp_only": {
+      "loss": 10.547926902770996,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 7.111070598022738e-07,
+          "max_absolute": 4.470348358154297e-08,
+          "norm": 1.5242395542539093,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999999999996667
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 2.9020956571958766e-05,
+          "max_absolute": 16023552.0,
+          "norm": 36600710830804.84,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.999999999996682
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 2.8438344114504437e-05,
+          "max_absolute": 96731136.0,
+          "norm": 99148608169245.86,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.9999999999930194
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 2.593017391839315e-05,
+          "max_absolute": 396361728.0,
+          "norm": 207112644448624.66,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999999999946214
+        }
+      }
+    },
+    "all": {
+      "loss": 10.547931671142578,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 0.007555664902295428,
+          "max_absolute": 0.0003982132766395807,
+          "norm": 1.5241570576635295,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999714558834132
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 14.773640999810286,
+          "max_absolute": 7793325342720.0,
+          "norm": 577309779894704.2,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.9999999234029493
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 14.773553771360206,
+          "max_absolute": 53354117988352.0,
+          "norm": 1563881801524976.0,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.9999998969221631
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 14.77353581017989,
+          "max_absolute": 228328363524096.0,
+          "norm": 3266814656880156.0,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999998760698069
+        }
+      }
+    },
+    "all_no_checkpoint": {
+      "loss": 10.547931671142578,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 0.007555664902295428,
+          "max_absolute": 0.0003982132766395807,
+          "norm": 1.5241570576635295,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999714558834132
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 14.772947146234815,
+          "max_absolute": 7792966729728.0,
+          "norm": 577284385089344.5,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.9999999232636674
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 14.772860563709202,
+          "max_absolute": 53351525908480.0,
+          "norm": 1563813072996661.5,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.9999998979409865
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 14.77284796426371,
+          "max_absolute": 228317877764096.0,
+          "norm": 3266672199359676.5,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999998778874648
+        }
+      }
+    },
+    "native_no_checkpoint": {
+      "loss": 10.547926902770996,
+      "gradients_vs_native": {
+        "backbone.lm_head.weight": {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 1.5242395431198414,
+          "reference_norm": 1.5242395431198414,
+          "cosine": 0.9999999999999359
+        },
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 8.731094202523674e-06,
+          "max_absolute": 3997696.0,
+          "norm": 36599347981018.59,
+          "reference_norm": 36599652730450.914,
+          "cosine": 0.9999999999964405
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 8.941067187232885e-06,
+          "max_absolute": 32768000.0,
+          "norm": 99144991073788.55,
+          "reference_norm": 99145812992121.23,
+          "cosine": 0.9999999999943683
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 9.746107248675365e-06,
+          "max_absolute": 148897792.0,
+          "norm": 207105315259929.9,
+          "reference_norm": 207107317192384.2,
+          "cosine": 0.9999999999992166
+        }
+      }
+    }
+  },
+  "checkpoint_effect": {
+    "all": {
+      "backbone.lm_head.weight": {
+        "relative_l2": 0.0,
+        "max_absolute": 0.0,
+        "norm": 1.5241570576635295,
+        "reference_norm": 1.5241570576635295,
+        "cosine": 0.9999999999998609
+      },
+      "backbone.model.layers.0.self_attn.q_proj.weight": {
+        "relative_l2": 4.403719328131298e-05,
+        "max_absolute": 358612992.0,
+        "norm": 577284385089344.5,
+        "reference_norm": 577309779894704.2,
+        "cosine": 0.9999999999977368
+      },
+      "memories.0.qkv.weight": {
+        "relative_l2": 4.40909004210296e-05,
+        "max_absolute": 2592079872.0,
+        "norm": 1563813072996661.5,
+        "reference_norm": 1563881801524976.0,
+        "cosine": 0.999999999993655
+      },
+      "memories.0.initial_weights.0": {
+        "relative_l2": 4.377346131314878e-05,
+        "max_absolute": 10485760000.0,
+        "norm": 3266672199359676.5,
+        "reference_norm": 3266814656880156.0,
+        "cosine": 0.9999999999927415
+      }
+    },
+    "native": {
+      "backbone.lm_head.weight": {
+        "relative_l2": 0.0,
+        "max_absolute": 0.0,
+        "norm": 1.5242395431198414,
+        "reference_norm": 1.5242395431198414,
+        "cosine": 0.9999999999999359
+      },
+      "backbone.model.layers.0.self_attn.q_proj.weight": {
+        "relative_l2": 8.731094202523674e-06,
+        "max_absolute": 3997696.0,
+        "norm": 36599347981018.59,
+        "reference_norm": 36599652730450.914,
+        "cosine": 0.9999999999964405
+      },
+      "memories.0.qkv.weight": {
+        "relative_l2": 8.941067187232885e-06,
+        "max_absolute": 32768000.0,
+        "norm": 99144991073788.55,
+        "reference_norm": 99145812992121.23,
+        "cosine": 0.9999999999943683
+      },
+      "memories.0.initial_weights.0": {
+        "relative_l2": 9.746107248675365e-06,
+        "max_absolute": 148897792.0,
+        "norm": 207105315259929.9,
+        "reference_norm": 207107317192384.2,
+        "cosine": 0.9999999999992166
+      }
+    }
+  },
+  "components": {
+    "loss": {
+      "output": {
+        "relative_l2": 0.0,
+        "max_absolute": 0.0,
+        "norm": 10.547926902770996,
+        "reference_norm": 10.547926902770996,
+        "cosine": 1.0
+      },
+      "gradients": [
+        {
+          "relative_l2": 4.6140581870356174e-07,
+          "max_absolute": 1.0244548320770264e-08,
+          "norm": 0.42271337107828055,
+          "reference_norm": 0.42271337329644043,
+          "cosine": 0.9999999999997162
+        },
+        {
+          "relative_l2": 3.962373013980101e-06,
+          "max_absolute": 8.913048077374697e-11,
+          "norm": 0.002776856733920636,
+          "reference_norm": 0.0027768567305662987,
+          "cosine": 0.999999999991904
+        }
+      ]
+    },
+    "rms_norm": {
+      "output": {
+        "relative_l2": 3.696471004125849e-08,
+        "max_absolute": 4.76837158203125e-07,
+        "norm": 724.0736829996075,
+        "reference_norm": 724.0736829599974,
+        "cosine": 0.9999999999999223
+      },
+      "gradients": [
+        {
+          "relative_l2": 5.363041174306914e-08,
+          "max_absolute": 4.76837158203125e-07,
+          "norm": 724.2249802509469,
+          "reference_norm": 724.2249798041909,
+          "cosine": 0.9999999999999176
+        },
+        {
+          "relative_l2": 1.5924292445812662e-07,
+          "max_absolute": 1.71661376953125e-05,
+          "norm": 728.0174729167519,
+          "reference_norm": 728.0174743071867,
+          "cosine": 0.9999999999999879
+        }
+      ]
+    },
+    "swiglu": {
+      "output": {
+        "relative_l2": 1.5983202417743205e-07,
+        "max_absolute": 2.384185791015625e-07,
+        "norm": 175.2639715293825,
+        "reference_norm": 175.26396953842024,
+        "cosine": 0.9999999999998861
+      },
+      "gradients": [
+        {
+          "relative_l2": 1.6740674107249802e-07,
+          "max_absolute": 3.5762786865234375e-07,
+          "norm": 254.59446090595856,
+          "reference_norm": 254.59445819661255,
+          "cosine": 0.9999999999999032
+        },
+        {
+          "relative_l2": 1.904513448255617e-07,
+          "max_absolute": 3.814697265625e-05,
+          "norm": 9077.871746072933,
+          "reference_norm": 9077.871658746193,
+          "cosine": 0.9999999999998134
+        },
+        {
+          "relative_l2": 1.5191845164222514e-07,
+          "max_absolute": 2.288818359375e-05,
+          "norm": 8951.433662870424,
+          "reference_norm": 8951.4335501028,
+          "cosine": 0.9999999999998381
+        },
+        {
+          "relative_l2": 1.5133702549959751e-07,
+          "max_absolute": 2.288818359375e-05,
+          "norm": 8960.125656814833,
+          "reference_norm": 8960.125553585574,
+          "cosine": 0.9999999999998261
+        }
+      ]
+    },
+    "swiglu_checkpoint": {
+      "output": {
+        "relative_l2": 0.0,
+        "max_absolute": 0.0,
+        "norm": 175.2639715293825,
+        "reference_norm": 175.2639715293825,
+        "cosine": 0.9999999999999019
+      },
+      "gradients": [
+        {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 253.82718434993868,
+          "reference_norm": 253.82718434993868,
+          "cosine": 0.999999999999915
+        },
+        {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 9298.074679017014,
+          "reference_norm": 9298.074679017014,
+          "cosine": 0.9999999999998386
+        },
+        {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 9101.564115148205,
+          "reference_norm": 9101.564115148205,
+          "cosine": 0.9999999999998594
+        },
+        {
+          "relative_l2": 0.0,
+          "max_absolute": 0.0,
+          "norm": 8863.632354595598,
+          "reference_norm": 8863.632354595598,
+          "cosine": 0.9999999999998457
+        }
+      ]
+    },
+    "rope": {
+      "output": {
+        "relative_l2": 3.459729101403148e-08,
+        "max_absolute": 4.76837158203125e-07,
+        "norm": 1024.1079300604674,
+        "reference_norm": 1024.1079299490123,
+        "cosine": 0.999999999999895
+      },
+      "gradients": [
+        {
+          "relative_l2": 3.785446735019071e-08,
+          "max_absolute": 4.76837158203125e-07,
+          "norm": 723.527247457575,
+          "reference_norm": 723.5272474814147,
+          "cosine": 0.999999999999907
+        },
+        {
+          "relative_l2": 3.7784206847636255e-08,
+          "max_absolute": 4.76837158203125e-07,
+          "norm": 724.1905371229041,
+          "reference_norm": 724.190537067566,
+          "cosine": 0.9999999999999131
+        }
+      ]
+    }
+  },
+  "component_checks_passed": true,
+  "elapsed_seconds": 29.85149416,
+  "check_script_sha256": "d3efb6d9e945a628622bd3bf643da4231b48edc2724150b63db223f283b5376a",
+  "modal_run_url": "https://modal.com/apps/abundant-ai/testing/ap-3hIkpp1Kt8zW0bMErKv4x4",
+  "settings": {
+    "batch_size": 1,
+    "input_tokens": 4096,
+    "dtype": "float32",
+    "tf32": false,
+    "compile_kernels": false,
+    "seed": 17,
+    "liger_kernel": "0.6.4",
+    "mac_segment_length": 512,
+    "memory_write_chunk": 16
+  },
+  "validation_status": "isolated_kernels_pass_full_stream_norm_and_rope_discrepancies_remain",
+  "notes": [
+    "Exact real-text token IDs reused from h100_liger_real_text.json. No optimizer constructed or stepped.",
+    "Isolated comparisons check forward outputs and vector-Jacobian products with fresh inputs and identical upstream gradients.",
+    "The fused-loss component check uses captured real final hidden activations, production summed loss, division by 4096 and a non-unit upstream scalar.",
+    "RMSNorm and SwiGLU component inputs use captured final hidden activations; RoPE uses representative fresh Q/K tensors with the native rotary embeddings.",
+    "Full-stream ablations inspect four parameter groups, not every model parameter.",
+    "Native wrappers control for returning hidden activations and projecting the vocabulary over the full block.",
+    "Checkpoint removal preserves close agreement within each implementation, but does not resolve the all-Liger versus native discrepancy.",
+    "The evidence supports correct wrapper wiring in the tested cases. It does not establish full-stream numerical correctness or a definitive root cause."
+  ]
+}

@@ -1,0 +1,268 @@
+{
+  "device": "NVIDIA H100 80GB HBM3, GPU-574862cb-5f19-f4ba-5e1f-9368316fdf3c",
+  "torch": "2.9.1+cu128",
+  "cuda": "12.8",
+  "transformers": "4.57.1",
+  "liger_kernel": "0.6.4",
+  "source_sha256": {
+    "titans/__init__.py": "fa8b6e595598508de9201c836d368dab9911acf7d2682dbeff54a4a55c233387",
+    "titans/core/__init__.py": "391591b728cb77d64e1f7e2ff204e68292bbf803b13d0b56978d139d8b5ac7a0",
+    "titans/core/protocols.py": "1f9a4a80373b11c09ad01e3d01be585aa53853d39ba2a2ccb4f8d51ad76ee593",
+    "titans/core/types.py": "3de369ba2f3f4800c82281e005347d998d1322b07519ebc88dde8f83cdbec351",
+    "titans/methods/__init__.py": "46b4cb3ecf334dabf23a141324c37811a05f0655e3b0ea99b2fc7c8c35cd7145",
+    "titans/methods/titans.py": "b7a3b50be44db77f4b4ae318de2f98aeef9b07ec3761de4f6ca3055a38e8a275",
+    "titans/optim/__init__.py": "97809859c569007d5f4c89f584935f7f383ad27adbcba3c962876547df61caa0",
+    "titans/optim/gpu_ops.py": "e60491943d775df71be0bbcce8e513093f03197ca60ea733ed66c3a7cb5317f7",
+    "titans/optim/kernels.py": "3081de45c7c600f4525083cee67854a41557b018038275536e54d71cf423c32a",
+    "titans/runtime/__init__.py": "64f71545f1f74236176a709924410fecd79db1aeafb390907b656d5770e15b13",
+    "titans/runtime/backbones.py": "ded9b271367ce29a7948e18a816464b86652274644a46839f6715575ec73b047",
+    "titans/runtime/connections.py": "92fb13cf65e6c1827257cdb0c0def35da3ec13b6555083571dfca3bbf521e20b",
+    "titans/runtime/model.py": "431cf39f913b7011337720ad8e5291b889505a31c475d35d88be5cade4d69021",
+    "titans/runtime/state.py": "f74d35c8e2de8041f81cfb476e58b4fac044a505d038d2c6aa0c3dc947e986d4",
+    "titans/training/__init__.py": "3a35133a4081cdf9292e72e40e35dcc9bb139b26d1ac5555eb7d65644392f72e",
+    "titans/training/learning.py": "adeac785a7b291ac9bb05f9b770d55526e16f06499ee87cd4f14a655cfd2e5cc",
+    "titans/training/pretraining.py": "0bb12e6a93ed0c5aa3983a25bffdb1bd52dce2a385c635e6b0afa08a826de61d",
+    "titans/training/trainer.py": "bdddcbf880b1d30efb8e3af1d1846347d555cd803bd22f4e7a0018c86b6c51d9",
+    "checks/__init__.py": "a7a8f3d710fda90978d1d8f3df83c31cd089d592419b84b346b2952a8a818356",
+    "checks/conftest.py": "1ce812503f3abaf1c084c5e39a72606007a97d2d434ddf05fcb9ce7e5f40e60e",
+    "checks/gpu_inference.py": "a48606deecf26e04717eb2a35b2fbcb88c33ccf244cad000d9eb6fb578b10ad9",
+    "checks/modal_image.py": "4c75d9d50045e534e246feb3bc9bcb3f956c8f0c30a01c850272345773b59b24",
+    "checks/modal_inference.py": "022fb5a5b35a1f3e8a21b9f78f5be82760d7d38cb488562f24917f7dee83ac9f",
+    "checks/modal_pretraining.py": "768b48e4ad8fed6e59d9615fc8ac735942eb27fda630452629a7df27530bdccf",
+    "checks/pretraining.py": "7293c561e6fc9f0ec690313a9bdea4c1649dbcb680ec5609e1a96f22cc9d83bf",
+    "checks/stream_pretraining.py": "9c97e5e6692cc226782cb8d97f48789788e714342ce08fb54d33cf19119c46f6"
+  },
+  "passed": false,
+  "results": {
+    "batch_size": 1,
+    "input_tokens": 4096,
+    "dtype": "float32",
+    "tf32": false,
+    "mac_segment_length": 512,
+    "memory_write_chunk": 16,
+    "activation_checkpointing": true,
+    "optimizer_steps": 0,
+    "short_gradient_relative_errors": {
+      "backbone.lm_head.weight": 8.329833744822454e-07,
+      "backbone.model.layers.0.self_attn.q_proj.weight": 2.189134120110491e-06,
+      "memories.0.qkv.weight": 1.847825651671859e-06,
+      "memories.0.initial_weights.0": 1.7986123167790306e-06
+    },
+    "short_checks": [
+      {
+        "loss": 10.735224723815918,
+        "gradient_norm_fp64_reduction": 31.126907700661274,
+        "forward_seconds": 2.0622753120000006,
+        "backward_seconds": 0.4728182780000001,
+        "forward_tokens_per_second": 16.001743224088013,
+        "forward_backward_tokens_per_second": 13.017270892945609,
+        "peak_allocated_gib": 3.2652392387390137,
+        "peak_reserved_gib": 3.5625
+      },
+      {
+        "loss": 10.735224723815918,
+        "gradient_norm_fp64_reduction": 31.126908820448268,
+        "forward_seconds": 17.120001045000002,
+        "backward_seconds": 1.0058675449999939,
+        "forward_tokens_per_second": 1.9275699757996128,
+        "forward_backward_tokens_per_second": 1.820602407887147,
+        "peak_allocated_gib": 3.250927448272705,
+        "peak_reserved_gib": 9.759765625
+      }
+    ],
+    "full_gradient_relative_errors": {
+      "backbone.lm_head.weight": 0.030463238269986256,
+      "backbone.model.layers.0.self_attn.q_proj.weight": 0.9852065733176261,
+      "memories.0.qkv.weight": 0.9852016698786219,
+      "memories.0.initial_weights.0": 0.9852088490487724
+    },
+    "full_gradient_parity_passed": false,
+    "training_boundary": {
+      "passed": true,
+      "ordinary_kv_before": 515,
+      "ordinary_kv_after": 4,
+      "tokens_processed": 4113,
+      "prefix_gradient_norm": 15.077798754495417,
+      "optimizer_steps": 0
+    },
+    "full_block": {
+      "eager": {
+        "loss": 10.590761184692383,
+        "gradient_norm_fp64_reduction": 1073489089.7875081,
+        "forward_seconds": 0.7754753880000003,
+        "backward_seconds": 1.7729614680000019,
+        "forward_tokens_per_second": 5281.921339326888,
+        "forward_backward_tokens_per_second": 1607.2597562527155,
+        "peak_allocated_gib": 8.715172290802002,
+        "peak_reserved_gib": 9.759765625
+      },
+      "optimized": {
+        "loss": 10.591068267822266,
+        "gradient_norm_fp64_reduction": 15883946.27727017,
+        "forward_seconds": 0.8364858989999959,
+        "backward_seconds": 1.469517949,
+        "forward_tokens_per_second": 4896.675490760448,
+        "forward_backward_tokens_per_second": 1776.2329423485016,
+        "peak_allocated_gib": 7.368950843811035,
+        "peak_reserved_gib": 9.759765625
+      }
+    }
+  },
+  "elapsed_seconds": 64.33635031,
+  "diagnostic_kernel_modes": {
+    "eager": {
+      "loss": 10.590761184692383,
+      "gradient_norm_fp64_reduction": 1073505170.304947,
+      "forward_seconds": 2.614370017999999,
+      "backward_seconds": 1.552482599000001,
+      "forward_tokens_per_second": 1566.7254335839777,
+      "forward_backward_tokens_per_second": 982.9961307700363,
+      "peak_allocated_gib": 8.717661380767822,
+      "peak_reserved_gib": 9.787109375,
+      "errors": {}
+    },
+    "liger": {
+      "loss": 10.590782165527344,
+      "gradient_norm_fp64_reduction": 1.0740875835081112e+19,
+      "forward_seconds": 2.905137362999998,
+      "backward_seconds": 2.2126858600000006,
+      "forward_tokens_per_second": 1409.9161203758897,
+      "forward_backward_tokens_per_second": 800.3402660709685,
+      "peak_allocated_gib": 7.396285057067871,
+      "peak_reserved_gib": 9.787109375,
+      "errors": {
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 10005546203.554356,
+          "cosine": 0.9999999996353158
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 10005542710.236635,
+          "cosine": 0.999999999512586
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 10005387603.280594,
+          "cosine": 0.9999999999532833
+        }
+      }
+    },
+    "compiled": {
+      "loss": 10.59091567993164,
+      "gradient_norm_fp64_reduction": 5024829252204.655,
+      "forward_seconds": 36.121742403,
+      "backward_seconds": 1.4308376230000022,
+      "forward_tokens_per_second": 113.39430845561363,
+      "forward_backward_tokens_per_second": 109.0737306774683,
+      "peak_allocated_gib": 8.111958026885986,
+      "peak_reserved_gib": 10.275390625,
+      "errors": {
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 4678.528098699101,
+          "cosine": 0.9999964160599466
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 4680.4262982267755,
+          "cosine": 0.9999914277354882
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 4677.731779954914,
+          "cosine": 0.999996187874655
+        }
+      }
+    },
+    "both": {
+      "loss": 10.591068267822266,
+      "gradient_norm_fp64_reduction": 15907170.774600381,
+      "forward_seconds": 0.6373053909999982,
+      "backward_seconds": 1.1736039379999994,
+      "forward_tokens_per_second": 6427.060021527437,
+      "forward_backward_tokens_per_second": 2261.8470921798457,
+      "peak_allocated_gib": 7.378476619720459,
+      "peak_reserved_gib": 10.275390625,
+      "errors": {
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 0.985185170850477,
+          "cosine": 0.9999975113197966
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 0.9851802626481033,
+          "cosine": 0.9999941058585229
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 0.9851874544514517,
+          "cosine": 0.9999976634484182
+        }
+      }
+    },
+    "eager_repeat": {
+      "loss": 10.590761184692383,
+      "gradient_norm_fp64_reduction": 1073486192.9825277,
+      "forward_seconds": 0.7047673100000011,
+      "backward_seconds": 1.3327822100000049,
+      "forward_tokens_per_second": 5811.847317379113,
+      "forward_backward_tokens_per_second": 2010.2578905665016,
+      "peak_allocated_gib": 8.718156337738037,
+      "peak_reserved_gib": 10.275390625,
+      "errors": {
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 1.8358025408165375e-05,
+          "cosine": 0.9999999999985322
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 1.8142480386514873e-05,
+          "cosine": 0.9999999999986624
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 1.763912460249883e-05,
+          "cosine": 0.9999999999998239
+        }
+      }
+    }
+  },
+  "baseline_runtime_revision": "cef0290b1f7c4cc0ddf71b6cdb46c3be325ab969",
+  "baseline_runtime_diagnostic": {
+    "eager": {
+      "loss": 10.590761184692383,
+      "gradient_norm_fp64_reduction": 1073506573.0510775,
+      "forward_seconds": 3.5055295660000008,
+      "backward_seconds": 1.6259064599999995,
+      "forward_tokens_per_second": 1168.4397244076758,
+      "forward_backward_tokens_per_second": 798.2171032136725,
+      "peak_allocated_gib": 8.717661380767822,
+      "peak_reserved_gib": 9.787109375,
+      "errors": {}
+    },
+    "both": {
+      "loss": 10.591068267822266,
+      "gradient_norm_fp64_reduction": 15888676.257839313,
+      "forward_seconds": 78.583330609,
+      "backward_seconds": 2.0453212270000023,
+      "forward_tokens_per_second": 52.12301347190409,
+      "forward_backward_tokens_per_second": 50.80079979919956,
+      "peak_allocated_gib": 7.378476142883301,
+      "peak_reserved_gib": 9.787109375,
+      "errors": {
+        "backbone.model.layers.0.self_attn.q_proj.weight": {
+          "relative_l2": 0.98520242576131,
+          "cosine": 0.999997510389764
+        },
+        "memories.0.qkv.weight": {
+          "relative_l2": 0.9851975183533993,
+          "cosine": 0.9999941035464595
+        },
+        "memories.0.initial_weights.0": {
+          "relative_l2": 0.9852046973297728,
+          "cosine": 0.9999976616191694
+        }
+      }
+    }
+  },
+  "validation_status": "full_block_gradient_parity_failed",
+  "notes": [
+    "The 4096-token boundary probe passed: active memory is preserved, ordinary decoder KV resets to the persistent prefix, and the recomputed prefix receives nonzero gradients in the next block.",
+    "The 33-token FP32 checks pass gradient comparison. The 4096-token check fails raw-gradient parity.",
+    "The original runtime reproduced the long-block discrepancy with identical initialization and input IDs.",
+    "All GPU passes used fixed inputs, performed forward/backward only, and constructed no optimizer.",
+    "Full-block timings are single warmed measurements. Diagnostic timings may include compilation.",
+    "The source hashes in this report match the implemented library and manual checks."
+  ]
+}

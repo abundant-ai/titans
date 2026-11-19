@@ -19,6 +19,7 @@ from torch.nn import functional as F
 from titans.core.protocols import (
     BackboneConnection,
     ConnectionContext,
+    ConnectionExecution,
     ConnectionFactory,
     ConnectionPlan,
     MemoryArchitecture,
@@ -533,6 +534,52 @@ class TitansMACConnection(ResidualConnection):
     """Memory as context, with one causal retrieval per arriving real token."""
 
     max_context_tokens = 1
+
+    def execution(self, position: int, tokens: int, *, prefix_tokens: int,
+                  segment_length: int, attention_window: int) -> ConnectionExecution:
+        """Schedule causal retrieval/token pairs inside one MAC segment.
+
+        Args:
+            position: Absolute position including persistent-prefix tokens.
+            tokens: Available real tokens.
+            prefix_tokens: Persistent attention-prefix length.
+            segment_length: Number of real tokens sharing the retrieval snapshot.
+            attention_window: Ordinary decoder window, independent of MAC segments.
+
+        Returns:
+            Paired rotary positions, full segment attention, a shared read cursor,
+            and prefix-only cache retention at the segment's end.
+        """
+        offset = (position - prefix_tokens) % segment_length
+        size = min(tokens, segment_length - offset)
+        return ConnectionExecution(
+            block_size=size, extra_tokens=size, position_start=prefix_tokens + 2 * offset,
+            attention_window=2 * segment_length, token_start=1, token_stride=2,
+            reset_cache=offset + size == segment_length, snapshot_memory=True,
+            retain_training_cache=True,
+        )
+
+    def prepare_block(self, context: ConnectionContext, memory: MemoryModule,
+                      state: StateProtocol, *, retrieval: StateProtocol | None,
+                      write: bool) -> ConnectionPlan:
+        """Retrieve against the segment-start weights and advancing causal history.
+
+        Args:
+            context: Real-token activations for this part of the segment.
+            memory: Built-in or supplied memory implementation.
+            state: Live memory updated by finish.
+            retrieval: Differentiable segment-start snapshot owned by the runtime.
+            write: Whether finish may write live memory.
+
+        Returns:
+            Interleaved causal retrievals and real tokens.
+
+        Raises:
+            ValueError: The runtime omitted the requested retrieval cursor.
+        """
+        if retrieval is None:
+            raise ValueError("MAC requires its segment retrieval snapshot")
+        return self._prepare_segment(context, memory, retrieval)
 
     def prepare(self, context: ConnectionContext, memory: MemoryModule,
                 state: StateProtocol, *, write: bool) -> ConnectionPlan:
